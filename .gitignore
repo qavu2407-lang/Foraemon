@@ -3,4 +3,7 @@
 
 # Binaries and packages
 *.zip
-main
+bootstrap
+
+# Environment files
+.env
