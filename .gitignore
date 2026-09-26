@@ -7,3 +7,6 @@ bootstrap
 
 # Environment files
 .env
+
+# Local rate history
+history.json

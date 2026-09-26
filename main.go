@@ -2,12 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
 	"strings"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -15,22 +11,11 @@ import (
 	"lorisocchipinti.com/gbp-rates/mailer"
 )
 
-const (
-	defaultFrom = "AUD"
-	defaultTo   = "VND"
-)
-
-// The v6 exchangerate-api response. "result" is a status string, not the number.
-type Quote struct {
-	Result         string  `json:"result"`
-	ConversionRate float64 `json:"conversion_rate"`
-	ErrorType      string  `json:"error-type"`
-}
-
+// RateRequest is the EventBridge event. Entry is optional: per pair, the MID-MARKET
+// rate on the day you converted, e.g. {"entry": {"AUD/VND": 18450}}. Not the effective
+// rate you received: that has a fee taken out, which would show as a permanent gain.
 type RateRequest struct {
-	From        string  `json:"from"`
-	To          string  `json:"to"`
-	AverageRate float64 `json:"avg_rate"`
+	Entry map[string]float64 `json:"entry"`
 }
 
 func main() {
@@ -38,106 +23,63 @@ func main() {
 }
 
 func CheckRate(ctx context.Context, request RateRequest) error {
-	if request.From == "" {
-		request.From = defaultFrom
-	}
-	if request.To == "" {
-		request.To = defaultTo
-	}
-	if request.AverageRate <= 0 {
-		return fmt.Errorf("avg_rate must be set to your average %s%s rate", request.From, request.To)
+	if err := validateEntries(request.Entry); err != nil {
+		return err
 	}
 
-	logger.Log("Fetching rate...")
-	currentRate, err := fetchRate(ctx, request.From, request.To)
+	// History only feeds the change figures. If it can't be read, still send the rates,
+	// but remember the failure: saving now would overwrite the history with one day.
+	history, historyErr := loadHistory(ctx)
+	if historyErr != nil {
+		logger.Error(fmt.Errorf("history unavailable, sending without change: %w", historyErr))
+	}
+
+	logger.Log("Fetching rates...")
+	snap, err := fetchRates(ctx)
 	if err != nil {
 		return err
 	}
 
-	move, pct := computeMove(currentRate, request.AverageRate)
-	pair := request.From + request.To
-	logger.Log(fmt.Sprintf("Current %s rate is %.2f. Possible gain/loss is %+.2f (%+.2f%%)", pair, currentRate, move, pct))
+	prev := previous(history, snap)
+	pairs := derivePairs(snap, prev)
+	for _, p := range pairs {
+		logger.Log(fmt.Sprintf("%s %s", p.Name, formatNum(p.Rate, p.Decimals)))
+	}
 
-	subject, body := alert(pair, request, currentRate, move, pct)
-	logger.Log("Sending alert to user...")
+	if historyErr == nil {
+		if err := saveHistory(ctx, appendSnapshot(history, snap)); err != nil {
+			logger.Error(fmt.Errorf("saving history: %w", err))
+		}
+	}
+
+	subject, body, err := render(buildView(snap, prev, pairs, request.Entry))
+	if err != nil {
+		return err
+	}
+	logger.Log("Sending email...")
 	return mailer.Send(ctx, subject, body)
 }
 
-func alert(pair string, request RateRequest, currentRate float64, move float64, pct float64) (string, string) {
-	mark, mood := "🟢", "🤑 🤑 🤑"
-	headline := "Good news! Price is up"
-	if move < 0 {
-		mark, mood = "🔴", "😰"
-		headline = "No luck, price is down"
+// validateEntries rejects unknown pair names and non-positive rates, so a typo in the
+// event fails loudly instead of silently dropping the line or dividing by zero.
+func validateEntries(entries map[string]float64) error {
+	for name, rate := range entries {
+		known := false
+		for _, def := range pairDefs {
+			known = known || def.name == name
+		}
+		if !known {
+			return fmt.Errorf("entry %q is not a reported pair (use AUD/VND, AUD/USD, USD/VND or CZK/VND)", name)
+		}
+		if rate <= 0 {
+			return fmt.Errorf("entry for %s must be a positive rate, got %v", name, rate)
+		}
 	}
-	greeting := "Good morning, bee ready to make money today! 🐝 💸 🐝"
-	subject := fmt.Sprintf("%s %s %.2f (%+.2f%%)", mark, pair, currentRate, pct)
-	body := fmt.Sprintf("%s\n\n%s %s %+.2f %s (%+.2f%%).\n\n1 %s = %.2f %s\nYour average: %.2f\n\n%s",
-		greeting,
-		mark, headline, move, request.To, pct,
-		request.From, currentRate, request.To,
-		request.AverageRate, mood)
-	return subject, body
-}
-
-func fetchRate(ctx context.Context, from string, to string) (float64, error) {
-	apikey := os.Getenv("EXCHANGERATE_API_KEY")
-	if apikey == "" {
-		return 0, fmt.Errorf("EXCHANGERATE_API_KEY is not set")
-	}
-
-	// The key travels in the path, so this URL is a secret: never log it.
-	url := fmt.Sprintf("https://v6.exchangerate-api.com/v6/%s/pair/%s/%s", apikey, from, to)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return 0, redact(err, apikey)
-	}
-
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, redact(err, apikey)
-	}
-	defer res.Body.Close()
-
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return 0, err
-	}
-
-	// Errors come back as a normal JSON body with an error-type, so let parseQuote
-	// name the actual problem rather than reporting a bare status code.
-	quote, err := parseQuote(body)
-	if err != nil {
-		return 0, fmt.Errorf("rate api returned %s: %w", res.Status, err)
-	}
-	return quote.ConversionRate, nil
+	return nil
 }
 
 // redact keeps the key out of the logs: net/http wraps failures in a *url.Error
 // that prints the whole URL, and the key lives in the path.
 func redact(err error, apikey string) error {
 	return errors.New(strings.ReplaceAll(err.Error(), apikey, "REDACTED"))
-}
-
-func parseQuote(data []byte) (Quote, error) {
-	var quote Quote
-	if err := json.Unmarshal(data, &quote); err != nil {
-		return Quote{}, err
-	}
-	if quote.Result != "success" {
-		return Quote{}, fmt.Errorf("lookup failed: %s", quote.ErrorType)
-	}
-	// A malformed success would otherwise be reported as a 100% crash.
-	if quote.ConversionRate <= 0 {
-		return Quote{}, fmt.Errorf("no usable conversion_rate")
-	}
-	return quote, nil
-}
-
-// computeMove reports the move in units of the quote currency plus the percentage.
-// AUD/VND trades around 18,500, so the forex "pip" convention of 1/10,000 that the
-// bot used for EUR-sized pairs is meaningless here.
-func computeMove(currentRate float64, averageRate float64) (move float64, pct float64) {
-	move = currentRate - averageRate
-	return move, move / averageRate * 100
 }

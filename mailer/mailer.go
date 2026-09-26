@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"mime"
 	"os"
+	"strings"
 
 	"golang.org/x/oauth2"
 	"google.golang.org/api/gmail/v1"
@@ -26,9 +27,22 @@ func Config() *oauth2.Config {
 	}
 }
 
-// Send delivers a plain-text mail to MAIL_TO as the account that granted REFRESH_TOKEN.
+// recipients normalises the MAIL_TO list. It takes one address or several separated
+// by commas; a trailing comma or stray space would otherwise build a header Gmail
+// rejects, costing that run's mail.
+func recipients(raw string) string {
+	var out []string
+	for _, addr := range strings.Split(raw, ",") {
+		if addr = strings.TrimSpace(addr); addr != "" {
+			out = append(out, addr)
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
+// Send delivers a plain-text mail to every address in MAIL_TO, as the account that granted REFRESH_TOKEN.
 func Send(ctx context.Context, subject string, body string) error {
-	to := os.Getenv("MAIL_TO")
+	to := recipients(os.Getenv("MAIL_TO"))
 	if to == "" {
 		return fmt.Errorf("MAIL_TO is not set")
 	}

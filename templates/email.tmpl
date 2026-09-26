@@ -1,0 +1,38 @@
+{{define "subject" -}}
+{{if gt .Headline.Dir 0}}🟢 {{else if lt .Headline.Dir 0}}🔴 {{end}}{{.Headline.Name}} {{.Headline.Rate}}{{with .Headline.Change}} ({{.}}){{end}}
+{{- end}}
+
+{{define "body" -}}
+Good morning, bee ready to make money today! 🐝 💸 🐝
+
+{{if .Since -}}
+Rates published {{.AsOf}}, change since {{.Since}}.
+{{- else -}}
+Rates published {{.AsOf}}. First run: history starts today, so there is no change yet.
+{{- end}}
+
+{{template "rate" .Headline}}
+{{- with .Legs}}
+{{- if .Flat}}
+  flat, no move to attribute
+{{- else}}
+  AUD leg  {{printf "%-8s" (print .AUD "pp")}} {{if gt .AUDDir 0}}AUD stronger vs USD{{else if lt .AUDDir 0}}AUD weaker vs USD{{else}}AUD unchanged vs USD{{end}}
+  VND leg  {{printf "%-8s" (print .VND "pp")}} {{if gt .VNDDir 0}}VND weaker vs USD{{else if lt .VNDDir 0}}VND stronger vs USD{{else}}VND unchanged vs USD{{end}}
+{{- end}}
+{{- end}}
+{{- template "entry" .Headline}}
+{{range .Others}}
+{{template "line" .}}
+{{- end}}
+
+Rates are mid-market. What you receive on a transfer is lower by the provider's fee.
+{{end}}
+
+{{define "line"}}{{template "rate" .}}{{template "entry" .}}{{end}}
+
+{{define "rate" -}}
+{{printf "%-8s %10s" .Name .Rate}}{{with .Change}}  {{printf "%7s" .}}{{end}}
+{{- end}}
+
+{{define "entry"}}{{with .Entry}}
+         {{.}}{{end}}{{end}}
