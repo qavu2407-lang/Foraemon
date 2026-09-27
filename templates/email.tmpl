@@ -1,5 +1,5 @@
 {{define "subject" -}}
-{{if gt .Headline.Dir 0}}🟢 {{else if lt .Headline.Dir 0}}🔴 {{end}}{{.Headline.Name}} {{.Headline.Rate}}{{with .Headline.Change}} ({{.}}){{end}}
+Testing {{.Count}}. {{range $i, $p := .Crosses}}{{if $i}} and {{end}}{{$p.Name}} {{$p.Rate}}{{with $p.Change}} ({{.}}){{end}}{{end}}
 {{- end}}
 
 {{define "body" -}}
@@ -11,16 +11,7 @@ Rates published {{.AsOf}}, change since {{.Since}}.
 Rates published {{.AsOf}}. First run: history starts today, so there is no change yet.
 {{- end}}
 
-{{template "rate" .Headline}}
-{{- with .Legs}}
-{{- if .Flat}}
-  flat, no move to attribute
-{{- else}}
-  AUD leg  {{printf "%-8s" (print .AUD "pp")}} {{if gt .AUDDir 0}}AUD stronger vs USD{{else if lt .AUDDir 0}}AUD weaker vs USD{{else}}AUD unchanged vs USD{{end}}
-  VND leg  {{printf "%-8s" (print .VND "pp")}} {{if gt .VNDDir 0}}VND weaker vs USD{{else if lt .VNDDir 0}}VND stronger vs USD{{else}}VND unchanged vs USD{{end}}
-{{- end}}
-{{- end}}
-{{- template "entry" .Headline}}
+{{template "line" .Headline}}
 {{range .Others}}
 {{template "line" .}}
 {{- end}}
@@ -28,10 +19,19 @@ Rates published {{.AsOf}}. First run: history starts today, so there is no chang
 Rates are mid-market. What you receive on a transfer is lower by the provider's fee.
 {{end}}
 
-{{define "line"}}{{template "rate" .}}{{template "entry" .}}{{end}}
+{{define "line"}}{{template "rate" .}}{{template "legs" .Legs}}{{template "entry" .}}{{end}}
+
+{{define "legs"}}{{with .}}
+{{- if .Flat}}
+  flat, no move to attribute
+{{- else}}
+  {{.Base}} leg  {{printf "%-8s" (print .Leg "pp")}} {{if gt .LegDir 0}}{{.Base}} stronger vs USD{{else if lt .LegDir 0}}{{.Base}} weaker vs USD{{else}}{{.Base}} unchanged vs USD{{end}}
+  VND leg  {{printf "%-8s" (print .VND "pp")}} {{if gt .VNDDir 0}}VND weaker vs USD{{else if lt .VNDDir 0}}VND stronger vs USD{{else}}VND unchanged vs USD{{end}}
+{{- end}}
+{{- end}}{{end}}
 
 {{define "rate" -}}
-{{printf "%-8s %10s" .Name .Rate}}{{with .Change}}  {{printf "%7s" .}}{{end}}
+{{printf "%-8s %12s" .Name .Rate}}{{with .Change}}  {{printf "%7s" .}}{{end}}
 {{- end}}
 
 {{define "entry"}}{{with .Entry}}

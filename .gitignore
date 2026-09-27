@@ -10,3 +10,6 @@ bootstrap
 
 # Local rate history
 history.json
+
+# Design notes, kept local
+PLAN.md

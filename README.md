@@ -1,16 +1,182 @@
-# Forex Bot
+# Foraemon: A Forex Bot that automatically fetches, explains – and augments Human Intelligence
 
-A daily email reporting AUD/VND, AUD/USD, USD/VND and CZK/VND, with the % change since
-the previous publication and the AUD/VND move split into its two causes: the Australian
-dollar against the US dollar, and the dong against the US dollar.
+A daily email reporting currency rates based on personal use. I chose AUD/VND, AUD/USD, USD/VND, CZK/USD, and CZK/VND.
 
-No LLM is involved. Every number is computed in Go, and every word of the email lives in
-[templates/email.tmpl](templates/email.tmpl). See [PLAN.md](PLAN.md) for the design and
-the reasoning behind it.
+This project runs in three phases, depending on different development stages and use cases. 
+
+1. Phase 1: Automatically fetching rates, calculating simple % rate changes and sending emails only.
+    -  No LLM is involved. Every number is computed in Go, and every word of the email lives in
+[templates/email.tmpl](templates/email.tmpl).
+    - Hardcoded, reliable but limited use.
+2. Phase 2: Automatically fetching news sources and explaining the changes.
+    - LLM is involved for synthesis and reasoning. Possible agentic loop involved for dynamic news fetch based on layer.
+    - Design to be updated in later versions.
+3. Phase 3. Human Autonomy Layer
+    - A governance layer will be added to ensure humans TRULY learns the signals and make sound judgments on their own. 
+    - Design to be updated in later versions.
 
 Based on [Ipanov7/forex-bot](https://github.com/Ipanov7/forex-bot) by Loris Occhipinti.
-This version switches it to AUD/VND with daily email alerts, reports four pairs with
-their daily change, and can run on GitHub Actions as well as AWS Lambda.
+
+## Architecture: Foraemon V1
+
+### Overview: Phase 1
+
+ Once a day, a trigger runs the bot. The bot fetches one set of exchange rates, compares
+them with the previous day's, and emails the result. It then exits. Nothing runs between
+emails.
+
+```
+  cron-job.org (your time)                      EventBridge cron
+        │  POST workflow_dispatch                     │
+        ▼                                             ▼
+  GitHub Actions: go run .                      AWS Lambda: bootstrap
+  history.json in the Actions cache             history.json in S3
+        └──────────────────────┬──────────────────────┘
+                               ▼
+                    CheckRate(ctx, request)                    main.go
+                               │
+       ┌───────────────────────┼─────────────────────────────┐
+       │ 1. validateEntries    │ reject unknown pairs / rates ≤ 0
+       │ 2. loadHistory        │ previous snapshots          history.go
+       │ 3. fetchRates         │ one GET /latest/USD         rates.go  
+       │ 4. derivePairs        │ five pairs + previous       rates.go 
+       │ 5. saveHistory        │ append today's snapshot     history.go
+       │ 6. buildView, render  │ numbers → text              templates.go 
+       │ 7. mailer.Send        │ plain-text mail             mailer/   
+       └───────────────────────┴─────────────────────────────┘
+```
+
+The same binary runs in both places. `main()` checks for `AWS_LAMBDA_RUNTIME_API`. If it is set, the binary runs as a Lambda handler. If not, it runs once and exits, and the optional event is read from the `EVENT` environment variable. The trigger decides when the email goes out. The code has no clock logic.
+
+### Files
+
+| File | Responsibility |
+|---|---|
+| [main.go](main.go) | Entry point. Runs the steps in order and decides what counts as fatal. |
+| [rates.go](rates.go) | Fetches and parses rates, derives the pairs, splits the AUD/VND and CZK/VND moves, formats numbers. |
+| [history.go](history.go) | Reads and writes `history.json`, from S3 or a local file. Finds the previous publication. |
+| [templates.go](templates.go) | Turns the numbers into display strings and renders the embedded template. |
+| [templates/email.tmpl](templates/email.tmpl) | Every word of the email: the `subject`, `body`, `line`, `rate`, `legs` and `entry` blocks. |
+| [mailer/](mailer/mailer.go) | Sends mail through the Gmail API using an OAuth refresh token. Cleans up `MAIL_TO`. |
+| [logger/](logger/logger.go) | Timestamped stdout, which ends up in CloudWatch or the Actions log. |
+| [cmd/authorize/](cmd/authorize/main.go) | One-time local helper that creates the Gmail `REFRESH_TOKEN`. |
+| [.github/workflows/daily-email.yml](.github/workflows/daily-email.yml) | The GitHub Actions job. |
+
+Everything is in one flat `package main` apart from `mailer` and `logger`. There's one entry point and data flows in one direction, so there are no boundaries worth enforcing with more packages.
+
+### Rates: one call, five pairs
+
+The provider quotes every currency per 1 USD. Here, I used **mid-market** rate from Exchange-rate API because it is free for my current usage. A single request to `/latest/USD` supplies all of them, and the five pairs are derived from it:
+
+| Pair | Derived as | Decimals shown |
+|---|---|---|
+| **AUD/VND** (headline) | VND ÷ AUD | 4 |
+| AUD/USD | 1 ÷ AUD | 4 |
+| USD/VND | VND (read directly) | 0 |
+| CZK/USD | 1 ÷ CZK | 4 |
+| CZK/VND | VND ÷ CZK | 4 |
+
+- **Why one call:** all five pairs come from the same publication, with one timestamp. Separate calls could each land on a different rate update. The AUD/VND split would then describe a move that never happened at any single moment.
+- **Direction convention:** every rate means "units of QUOTE per 1 BASE" and is named `BASE/QUOTE`. Reciprocals are taken only in `pairDefs` in [rates.go](rates.go). Mixing directions is the classic currency bug, and both versions look like plausible numbers.
+- **Strict parsing:** `parseRates` keeps only AUD, VND and CZK. It fails if any of them is missing or not positive, or if the response has no publication time. If the provider changes its format, the bot stops instead of dividing by zero.
+- **Key hygiene:** the API key is part of the URL path. The URL is never logged, and `redact` removes the key from network errors.
+
+### "% change": what it's measured against
+
+"% change" is measured against the **previous publication**, which is what rate sites such as Wise and XE show. Separately, you can supply an `entry` rate per pair. That adds a line labelled "vs your entry", which compares today's rate with the rate on the day you converted. The two figures answer different questions, so they get different labels.
+
+### Splitting the AUD/VND and CZK/VND moves
+
+```
+AUD/VND = AUD/USD × USD/VND
+          AUD leg   VND leg
+```
+
+```
+CZK/VND = CZK/USD × USD/VND
+          CZK leg   VND leg
+```
+
+If AUD/VND moved, either the Australian dollar moved against the US dollar, or the dong did, or both. CZK/VND works the same way with the Czech koruna. `attribute` in [rates.go](rates.go) splits each move between its two legs, and each leg is a pair the email also shows:
+
+- **Log contributions.** Percentages of a product don't add up exactly, because of a small cross term. Logs do. Each leg's share of the log move is scaled to the plain percentage, so the two legs sum to the headline figure with nothing left over.
+- **Flat guard.** If the total move would print as 0.00%, the split would divide by almost zero. The email says "flat" instead.
+- **Round once, at the end.** Calculations use full `float64`. When rounding to 0.01, the larger leg absorbs any leftover so the column still adds up. A table that doesn't add up makes every number in it look wrong.
+- **Words beside every sign.** The VND leg is USD/VND, so a *positive* VND leg means the dong got *weaker*. The template prints the direction in words, because the sign alone is easy to misread.
+- **Units:** `%` is a pair's own change. `pp` is how much of the AUD/VND or CZK/VND change one leg accounts for.
+
+### History
+
+Each run appends one snapshot (publication time plus the three per-USD rates) to
+`history.json`. That's about 85 bytes a day, or ~31 KB a year, capped at 400 snapshots.
+
+| Where it runs | Where history lives |
+|---|---|
+| Lambda | S3 object `history.json` in `HISTORY_BUCKET` |
+| GitHub Actions | `history.json` in the Actions cache, saved under a new key each run and restored from the newest |
+| Locally | `./history.json`, or `HISTORY_FILE` |
+
+- **Duplicate runs:** the free tier publishes about once a day, so a second run can see a
+  publication that's already stored. `appendSnapshot` skips it, and `previous` compares
+  against the last *older* publication, never against itself.
+- **Why one JSON file and not a database:** ten years of data fits in ~300 KB, and the
+  only query is "the previous entry". A database would add a driver, a schema and
+  credentials. On AWS, RDS would also need a VPC and a NAT gateway (~$45/month) to
+  store 31 KB a year.
+- **Not yet tested:** the S3 path has only been compiled, never run against a real bucket.
+
+### Templates
+
+[templates/email.tmpl](templates/email.tmpl) is compiled into the binary with `//go:embed`
+and parsed at start-up with `text/template`. If the template is broken, the program fails
+before anything is sent, not halfway through. Go passes it formatted strings and
+directions (`+1`, `0`, `-1`). The template decides the wording. Changing the copy means
+editing that file and redeploying. No code changes are needed.
+
+The email is plain text, aligned in columns with spaces. It looks the same in every mail
+client, including in dark mode.
+
+### Failure policy
+
+The rates are the whole point of the email, so anything that would make them wrong stops
+the run. Anything that only affects the change figures does not.
+
+| What fails | What happens |
+|---|---|
+| `entry` names an unknown pair, or has a rate ≤ 0 | Stops before any network call |
+| Rate API is unreachable, returns an error, or is missing a currency | Stops. No email. |
+| History can't be read | The email is sent without change figures. The history file is **left untouched** rather than overwritten with a single day. |
+| History can't be saved | Logged. The email is still sent. |
+| Move too small to split | The email prints "flat". This is a normal outcome, not an error. |
+| Template is broken | Fails at start-up |
+| Gmail send fails | The run fails (a Lambda error, or a red Actions run) |
+
+There are no retries. With one run a day, a failed run is followed by tomorrow's normal
+email.
+
+### Configuration
+
+| Environment variables (secrets) | Event (optional) |
+|---|---|
+| `EXCHANGERATE_API_KEY` | `{"entry": {"AUD/VND": 18450}}` |
+| `CLIENT_ID`, `CLIENT_SECRET`, `REFRESH_TOKEN` | Lambda: the EventBridge input |
+| `MAIL_TO` (comma-separated) | Actions/local: the `EVENT` variable |
+| `HISTORY_BUCKET` or `HISTORY_FILE` | |
+
+Secrets never go in the event. Event bodies show up in schedule configs and logs.
+
+### Testing
+
+[main_test.go](main_test.go) covers the pure functions without any network calls: rate
+parsing, the direction convention, attribution (same direction, opposite legs, one leg
+still, near-zero), rounded legs adding up, history dedupe and cap, entry validation,
+number formatting, key redaction, and a golden test that fixes the whole rendered email.
+[mailer/mailer_test.go](mailer/mailer_test.go) covers `MAIL_TO` parsing. The network
+wrappers contain no logic, so nothing mocks HTTP.
+
+```sh
+go vet ./... && go test ./...
+```
 
 ## Getting Started
 
@@ -20,7 +186,7 @@ I use [exchangerate-api.com](https://app.exchangerate-api.com/) because it's fre
 simple, but anything goes as long as you are willing to adapt the code a bit. Put the
 key in `EXCHANGERATE_API_KEY`.
 
-One call to `/latest/USD` supplies all four pairs, so they always come from the same
+One call to `/latest/USD` supplies all five pairs, so they always come from the same
 publication. The key travels in the URL path for this API, so `fetchRates` never logs the
 URL and scrubs the key out of network errors before they reach CloudWatch.
 
@@ -111,8 +277,8 @@ deploy the code.
 ### 4b. Or: GitHub Actions instead of Lambda
 
 [.github/workflows/daily-email.yml](.github/workflows/daily-email.yml) sends the email,
-with no AWS account needed. [cron-job.org](https://cron-job.org) starts it at 05:00
-Vietnam time. GitHub's own `schedule:` trigger can start runs late or skip them.
+with no AWS account needed. [cron-job.org](https://cron-job.org) starts it at the time
+you choose. GitHub's own `schedule:` trigger can start runs late or skip them.
 
 1. Under **Settings > Secrets and variables > Actions**, add the secrets `CLIENT_ID`,
    `CLIENT_SECRET`, `REFRESH_TOKEN`, `MAIL_TO` and `EXCHANGERATE_API_KEY`.
@@ -123,8 +289,9 @@ Vietnam time. GitHub's own `schedule:` trigger can start runs late or skip them.
    **Only select repositories** (this one), permission **Actions: Read and write**,
    nothing else.
 1. On cron-job.org, create a job:
-   - **URL:** `https://api.github.com/repos/OWNER/forex-bot/actions/workflows/daily-email.yml/dispatches`
-   - **Schedule:** custom, every day at 05:00, timezone `Asia/Ho_Chi_Minh`
+   - **URL:** `https://api.github.com/repos/OWNER/REPO/actions/workflows/daily-email.yml/dispatches`
+   - **Schedule:** custom, every day at your time, in your timezone (e.g. 05:00 `Asia/Ho_Chi_Minh`).
+     cron-job.org handles the timezone, so there's no UTC conversion.
    - **Advanced > Request method:** `POST`
    - **Advanced > Headers:**
      `Authorization: Bearer <token>`, `Accept: application/vnd.github+json`,
@@ -142,16 +309,26 @@ out without change figures and the history starts again.
 
 ## What the email says
 
+Subject: `Testing 2. AUD/VND 18,238.1944 (-1.38%) and CZK/VND 1,230.1171 (+0.17%)`.
+The number counts days of stored history, so it restarts if the history is lost.
+
 ```
-AUD/VND   18,238.19   -1.38%
+AUD/VND   18,238.1900   -1.38%
   AUD leg  -1.32pp  AUD weaker vs USD
   VND leg  -0.06pp  VND stronger vs USD
-         -1.15% vs your entry 18,450.00
+         -1.15% vs your entry 18,450.0000
+
+AUD/USD        0.6536   -1.32%
+USD/VND        26,300   -0.06%
+CZK/USD        0.0465   +0.31%
+CZK/VND    1,223.4000   +0.25%
+  CZK leg  +0.31pp  CZK stronger vs USD
+  VND leg  -0.06pp  VND stronger vs USD
 ```
 
 - **%** is a pair's own change since the previous publication.
-- **pp** is how much of the AUD/VND change each leg accounts for. The two legs always add
-  up to the headline figure.
+- **pp** is how much of the AUD/VND or CZK/VND change each leg accounts for. The two legs
+  always add up to that pair's figure.
 - The VND leg is USD/VND, so a **positive** VND leg means the dong got **weaker**. The
   words next to each leg say which way it went; trust those over the sign.
 - All rates are mid-market. What you receive on a transfer is lower by the provider's fee.

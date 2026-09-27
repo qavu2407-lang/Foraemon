@@ -27,7 +27,8 @@ func Test_ParseRates(t *testing.T) {
 }
 
 func Test_DerivePairs_SignConvention(t *testing.T) {
-	// The provider sends USD/AUD = 1.5, i.e. 1.5 AUD per dollar. AUD/USD is its reciprocal.
+	// The provider sends USD/AUD = 1.5, i.e. 1.5 AUD per dollar. AUD/USD is its reciprocal,
+	// and CZK/USD likewise.
 	pairs := derivePairs(snap(1, 1.5, 26000, 20), nil)
 
 	byName := map[string]float64{}
@@ -38,31 +39,47 @@ func Test_DerivePairs_SignConvention(t *testing.T) {
 	assert.Equal(t, "AUD/VND", pairs[0].Name, "headline pair first")
 	assert.InDelta(t, 0.6667, byName["AUD/USD"], 0.0001)
 	assert.InDelta(t, 26000, byName["USD/VND"], 0)
+	assert.InDelta(t, 0.05, byName["CZK/USD"], 1e-12)
 	assert.InDelta(t, 1300, byName["CZK/VND"], 0.0001)
 	assert.InDelta(t, 17333.33, byName["AUD/VND"], 0.01)
 	assert.InDelta(t, byName["AUD/USD"]*byName["USD/VND"], byName["AUD/VND"], 1e-9)
+	assert.InDelta(t, byName["CZK/USD"]*byName["USD/VND"], byName["CZK/VND"], 1e-9)
+}
+
+// pairsByName derives the pairs and indexes them, so tests can pick legs by name.
+func pairsByName(cur Snapshot, prev *Snapshot) map[string]Pair {
+	m := map[string]Pair{}
+	for _, p := range derivePairs(cur, prev) {
+		m[p.Name] = p
+	}
+	return m
 }
 
 func Test_Attribute(t *testing.T) {
 	cases := []struct {
-		name           string
-		prev, cur      Snapshot
-		audDir, vndDir float64 // expected sign of each leg
+		name            string
+		base            string // AUD or CZK: which cross pair to split
+		prev, cur       Snapshot
+		baseDir, vndDir float64 // expected sign of each leg
 	}{
 		// USD/AUD down = AUD stronger; USD/VND up = VND weaker. Both push AUD/VND up.
-		{"both legs push up", snap(1, 1.50, 26000, 20), snap(2, 1.49, 26100, 20), 1, 1},
+		{"AUD: both legs push up", "AUD", snap(1, 1.50, 26000, 20), snap(2, 1.49, 26100, 20), 1, 1},
 		// AUD weaker pulls down, VND weaker pushes up.
-		{"legs oppose", snap(1, 1.50, 26000, 20), snap(2, 1.52, 26100, 20), -1, 1},
-		{"only VND moved", snap(1, 1.50, 26000, 20), snap(2, 1.50, 26100, 20), 0, 1},
+		{"AUD: legs oppose", "AUD", snap(1, 1.50, 26000, 20), snap(2, 1.52, 26100, 20), -1, 1},
+		{"AUD: only VND moved", "AUD", snap(1, 1.50, 26000, 20), snap(2, 1.50, 26100, 20), 0, 1},
+		// USD/CZK down = CZK stronger.
+		{"CZK: both legs push up", "CZK", snap(1, 1.50, 26000, 20), snap(2, 1.50, 26100, 19.8), 1, 1},
+		{"CZK: legs oppose", "CZK", snap(1, 1.50, 26000, 20), snap(2, 1.50, 26100, 20.2), -1, 1},
+		{"CZK: only CZK moved", "CZK", snap(1, 1.50, 26000, 20), snap(2, 1.50, 26000, 19.8), 1, 0},
 	}
 	for _, c := range cases {
 		prev := c.prev
-		p := derivePairs(c.cur, &prev)
-		a := attribute(p[0], p[1], p[2])
+		p := pairsByName(c.cur, &prev)
+		a := attribute(p[c.base+"/VND"], p[c.base+"/USD"], p["USD/VND"])
 
 		assert.False(t, a.Flat, c.name)
-		assert.InDelta(t, a.Total, a.AUDLeg+a.VNDLeg, 1e-9, "%s: legs must sum to the total", c.name)
-		assert.Equal(t, c.audDir, sgn(a.AUDLeg), c.name)
+		assert.InDelta(t, a.Total, a.BaseLeg+a.VNDLeg, 1e-9, "%s: legs must sum to the total", c.name)
+		assert.Equal(t, c.baseDir, sgn(a.BaseLeg), c.name)
 		assert.Equal(t, c.vndDir, sgn(a.VNDLeg), c.name)
 	}
 }
@@ -75,9 +92,9 @@ func Test_Attribute_NearZeroIsFlat(t *testing.T) {
 
 func Test_Hundredths_LegsAddUpAfterRounding(t *testing.T) {
 	// Rounded independently: 0.13 + 0.13 = 0.26, but the total shows 0.25.
-	total, aud, vnd := Attribution{Total: 0.252, AUDLeg: 0.126, VNDLeg: 0.126}.hundredths()
+	total, base, vnd := Attribution{Total: 0.252, BaseLeg: 0.126, VNDLeg: 0.126}.hundredths()
 	assert.Equal(t, int64(25), total)
-	assert.Equal(t, total, aud+vnd)
+	assert.Equal(t, total, base+vnd)
 }
 
 func Test_History_DedupesCapsAndFindsPrevious(t *testing.T) {
@@ -132,21 +149,24 @@ func Test_Render_Golden(t *testing.T) {
 	cur := snap(1790380800, 1.4400, 26263, 21.35)
 	pairs := derivePairs(cur, &prev)
 
-	subject, body, err := render(buildView(cur, &prev, pairs, map[string]float64{"AUD/VND": 18450}))
+	subject, body, err := render(buildView(cur, &prev, pairs, map[string]float64{"AUD/VND": 18450}, 2))
 	assert.Nil(t, err)
-	assert.Equal(t, "🔴 AUD/VND 18,238.19 (-1.38%)", subject)
+	assert.Equal(t, "Testing 2. AUD/VND 18,238.1944 (-1.38%) and CZK/VND 1,230.1171 (+0.17%)", subject)
 	assert.Equal(t, `Good morning, bee ready to make money today! 🐝 💸 🐝
 
 Rates published 26 Sep 2026, change since 25 Sep 2026.
 
-AUD/VND   18,238.19   -1.38%
+AUD/VND   18,238.1944   -1.38%
   AUD leg  -1.32pp  AUD weaker vs USD
   VND leg  -0.06pp  VND stronger vs USD
-         -1.15% vs your entry 18,450.00
+         -1.15% vs your entry 18,450.0000
 
-AUD/USD      0.6944   -1.32%
-USD/VND      26,263   -0.06%
-CZK/VND     1,230.1   +0.17%
+AUD/USD        0.6944   -1.32%
+USD/VND        26,263   -0.06%
+CZK/USD        0.0468   +0.23%
+CZK/VND    1,230.1171   +0.17%
+  CZK leg  +0.23pp  CZK stronger vs USD
+  VND leg  -0.06pp  VND stronger vs USD
 
 Rates are mid-market. What you receive on a transfer is lower by the provider's fee.
 `, body)
@@ -154,9 +174,9 @@ Rates are mid-market. What you receive on a transfer is lower by the provider's 
 
 func Test_Render_FirstRun(t *testing.T) {
 	cur := snap(1790380800, 1.4400, 26263, 21.35)
-	subject, body, err := render(buildView(cur, nil, derivePairs(cur, nil), nil))
+	subject, body, err := render(buildView(cur, nil, derivePairs(cur, nil), nil, 1))
 	assert.Nil(t, err)
-	assert.Equal(t, "AUD/VND 18,238.19", subject, "no change and no colour without history")
+	assert.Equal(t, "Testing 1. AUD/VND 18,238.1944 and CZK/VND 1,230.1171", subject, "no change without history")
 	assert.Contains(t, body, "First run")
 	assert.NotContains(t, body, "leg")
 }

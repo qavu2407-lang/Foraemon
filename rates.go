@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-// needed are the currencies the four pairs are built from.
+// needed are the currencies the five pairs are built from.
 var needed = []string{"AUD", "VND", "CZK"}
 
 // Snapshot is one published set of rates, quoted per 1 USD as the provider sends them.
@@ -28,7 +28,7 @@ type latestResponse struct {
 	ConversionRates map[string]float64 `json:"conversion_rates"`
 }
 
-// fetchRates makes one call for every currency, so all four pairs come from the same
+// fetchRates makes one call for every currency, so all five pairs come from the same
 // publication. Separate calls could straddle an update and attribute a move that never
 // happened at any single moment.
 func fetchRates(ctx context.Context) (Snapshot, error) {
@@ -90,15 +90,20 @@ func parseRates(data []byte) (Snapshot, error) {
 // Every rate is "units of QUOTE per 1 BASE" and named BASE/QUOTE. The provider quotes
 // everything per 1 USD, i.e. as USD/xxx, so the reciprocals are taken here and nowhere
 // else. The order is the email's order: the headline pair first.
+//
+// split names the base currency of a cross pair: X/VND = X/USD × USD/VND, and the email
+// splits its move into those two legs. Both legs must be pairs listed here.
 var pairDefs = []struct {
 	name     string
 	decimals int
+	split    string
 	rate     func(perUSD map[string]float64) float64
 }{
-	{"AUD/VND", 2, func(u map[string]float64) float64 { return u["VND"] / u["AUD"] }},
-	{"AUD/USD", 4, func(u map[string]float64) float64 { return 1 / u["AUD"] }},
-	{"USD/VND", 0, func(u map[string]float64) float64 { return u["VND"] }},
-	{"CZK/VND", 1, func(u map[string]float64) float64 { return u["VND"] / u["CZK"] }},
+	{"AUD/VND", 4, "AUD", func(u map[string]float64) float64 { return u["VND"] / u["AUD"] }},
+	{"AUD/USD", 4, "", func(u map[string]float64) float64 { return 1 / u["AUD"] }},
+	{"USD/VND", 0, "", func(u map[string]float64) float64 { return u["VND"] }},
+	{"CZK/USD", 4, "", func(u map[string]float64) float64 { return 1 / u["CZK"] }},
+	{"CZK/VND", 4, "CZK", func(u map[string]float64) float64 { return u["VND"] / u["CZK"] }},
 }
 
 type Pair struct {
@@ -106,6 +111,7 @@ type Pair struct {
 	Rate     float64
 	Prev     float64 // 0 when there is no earlier publication to compare against
 	Decimals int
+	Split    string // base currency of a cross pair to split, "" for none
 }
 
 func (p Pair) HasPrev() bool { return p.Prev > 0 }
@@ -117,7 +123,7 @@ func (p Pair) Pct() float64 { return (p.Rate/p.Prev - 1) * 100 }
 func derivePairs(cur Snapshot, prev *Snapshot) []Pair {
 	pairs := make([]Pair, len(pairDefs))
 	for i, def := range pairDefs {
-		pairs[i] = Pair{Name: def.name, Rate: def.rate(cur.PerUSD), Decimals: def.decimals}
+		pairs[i] = Pair{Name: def.name, Rate: def.rate(cur.PerUSD), Decimals: def.decimals, Split: def.split}
 		if prev != nil {
 			pairs[i].Prev = def.rate(prev.PerUSD)
 		}
@@ -125,44 +131,45 @@ func derivePairs(cur Snapshot, prev *Snapshot) []Pair {
 	return pairs
 }
 
-// Attribution splits the AUD/VND move into the AUD/USD leg and the USD/VND leg.
-// All three are in percent; the legs are percentage points of Total.
+// Attribution splits a cross pair's move (AUD/VND, CZK/VND) into its base leg (AUD/USD,
+// CZK/USD) and the USD/VND leg. All three are in percent; the legs are percentage points
+// of Total.
 type Attribution struct {
-	Total  float64
-	AUDLeg float64
-	VNDLeg float64
-	Flat   bool // the move would print as 0.00%, so there is nothing to split
+	Total   float64
+	BaseLeg float64
+	VNDLeg  float64
+	Flat    bool // the move would print as 0.00%, so there is nothing to split
 }
 
 // flatBelow is half the smallest displayed step: anything smaller rounds to 0.00%.
 const flatBelow = 0.005
 
-func attribute(audvnd, audusd, usdvnd Pair) Attribution {
-	total := audvnd.Pct()
+func attribute(cross, base, usdvnd Pair) Attribution {
+	total := cross.Pct()
 	if math.Abs(total) < flatBelow {
 		return Attribution{Total: total, Flat: true}
 	}
-	// Percentages of a product don't add, but logs do: ln of the AUD/VND move is
-	// exactly la + lu. Scaling each leg's share by the plain % keeps the legs summing
-	// to the headline figure with no leftover cross term.
-	la := math.Log(audusd.Rate / audusd.Prev)
+	// Percentages of a product don't add, but logs do: ln of the cross move is exactly
+	// lb + lu. Scaling each leg's share by the plain % keeps the legs summing to the
+	// pair's figure with no leftover cross term.
+	lb := math.Log(base.Rate / base.Prev)
 	lu := math.Log(usdvnd.Rate / usdvnd.Prev)
-	return Attribution{Total: total, AUDLeg: total * la / (la + lu), VNDLeg: total * lu / (la + lu)}
+	return Attribution{Total: total, BaseLeg: total * lb / (lb + lu), VNDLeg: total * lu / (lb + lu)}
 }
 
 // hundredths rounds to the displayed precision (0.01%) so the legs add up to the total
 // exactly: the larger leg absorbs any rounding difference. A column that doesn't add up
 // undermines every other number in the email.
-func (a Attribution) hundredths() (total, aud, vnd int64) {
-	total, aud, vnd = toHundredths(a.Total), toHundredths(a.AUDLeg), toHundredths(a.VNDLeg)
-	if diff := total - aud - vnd; diff != 0 {
-		if math.Abs(a.AUDLeg) >= math.Abs(a.VNDLeg) {
-			aud += diff
+func (a Attribution) hundredths() (total, base, vnd int64) {
+	total, base, vnd = toHundredths(a.Total), toHundredths(a.BaseLeg), toHundredths(a.VNDLeg)
+	if diff := total - base - vnd; diff != 0 {
+		if math.Abs(a.BaseLeg) >= math.Abs(a.VNDLeg) {
+			base += diff
 		} else {
 			vnd += diff
 		}
 	}
-	return total, aud, vnd
+	return total, base, vnd
 }
 
 func toHundredths(pct float64) int64 { return int64(math.Round(pct * 100)) }

@@ -63,13 +63,16 @@ func CheckRate(ctx context.Context, request RateRequest) error {
 		logger.Log(fmt.Sprintf("%s %s", p.Name, formatNum(p.Rate, p.Decimals)))
 	}
 
+	history = appendSnapshot(history, snap)
 	if historyErr == nil {
-		if err := saveHistory(ctx, appendSnapshot(history, snap)); err != nil {
+		if err := saveHistory(ctx, history); err != nil {
 			logger.Error(fmt.Errorf("saving history: %w", err))
 		}
 	}
 
-	subject, body, err := render(buildView(snap, prev, pairs, request.Entry))
+	// ponytail: the count is days of stored history, so it restarts if history is lost
+	// and stops at keepSnapshots (400). A real send counter would need its own storage.
+	subject, body, err := render(buildView(snap, prev, pairs, request.Entry, len(history)))
 	if err != nil {
 		return err
 	}
@@ -86,7 +89,7 @@ func validateEntries(entries map[string]float64) error {
 			known = known || def.name == name
 		}
 		if !known {
-			return fmt.Errorf("entry %q is not a reported pair (use AUD/VND, AUD/USD, USD/VND or CZK/VND)", name)
+			return fmt.Errorf("entry %q is not a reported pair (use AUD/VND, AUD/USD, USD/VND, CZK/USD or CZK/VND)", name)
 		}
 		if rate <= 0 {
 			return fmt.Errorf("entry for %s must be a positive rate, got %v", name, rate)
