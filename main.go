@@ -31,12 +31,21 @@ func main() {
 	var request RateRequest
 	if event := os.Getenv("EVENT"); event != "" {
 		if err := json.Unmarshal([]byte(event), &request); err != nil {
-			log.Fatalf("EVENT is not valid JSON: %v", err)
+			fail(fmt.Errorf("EVENT is not valid JSON: %w", err))
 		}
 	}
 	if err := CheckRate(context.Background(), request); err != nil {
-		log.Fatal(err)
+		fail(err)
 	}
+}
+
+// fail exits with err. On GitHub Actions it also prints an ::error:: line, which puts the
+// message on the run's summary page instead of only in the step log.
+func fail(err error) {
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		fmt.Printf("::error::%s\n", strings.ReplaceAll(err.Error(), "\n", "%0A"))
+	}
+	log.Fatal(err)
 }
 
 func CheckRate(ctx context.Context, request RateRequest) error {

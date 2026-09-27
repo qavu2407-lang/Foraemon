@@ -99,11 +99,11 @@ var pairDefs = []struct {
 	split    string
 	rate     func(perUSD map[string]float64) float64
 }{
-	{"AUD/VND", 4, "AUD", func(u map[string]float64) float64 { return u["VND"] / u["AUD"] }},
-	{"AUD/USD", 4, "", func(u map[string]float64) float64 { return 1 / u["AUD"] }},
+	{"AUD/VND", 2, "AUD", func(u map[string]float64) float64 { return u["VND"] / u["AUD"] }},
+	{"AUD/USD", 2, "", func(u map[string]float64) float64 { return 1 / u["AUD"] }},
 	{"USD/VND", 0, "", func(u map[string]float64) float64 { return u["VND"] }},
-	{"CZK/USD", 4, "", func(u map[string]float64) float64 { return 1 / u["CZK"] }},
-	{"CZK/VND", 4, "CZK", func(u map[string]float64) float64 { return u["VND"] / u["CZK"] }},
+	{"CZK/USD", 2, "", func(u map[string]float64) float64 { return 1 / u["CZK"] }},
+	{"CZK/VND", 2, "CZK", func(u map[string]float64) float64 { return u["VND"] / u["CZK"] }},
 }
 
 type Pair struct {

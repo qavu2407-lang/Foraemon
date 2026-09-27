@@ -42,7 +42,7 @@ emails.
        │ 4. derivePairs        │ five pairs + previous       rates.go 
        │ 5. saveHistory        │ append today's snapshot     history.go
        │ 6. buildView, render  │ numbers → text              templates.go 
-       │ 7. mailer.Send        │ plain-text mail             mailer/   
+       │ 7. mailer.Send        │ HTML mail                   mailer/   
        └───────────────────────┴─────────────────────────────┘
 ```
 
@@ -56,8 +56,8 @@ The same binary runs in both places. `main()` checks for `AWS_LAMBDA_RUNTIME_API
 | [rates.go](rates.go) | Fetches and parses rates, derives the pairs, splits the AUD/VND and CZK/VND moves, formats numbers. |
 | [history.go](history.go) | Reads and writes `history.json`, from S3 or a local file. Finds the previous publication. |
 | [templates.go](templates.go) | Turns the numbers into display strings and renders the embedded template. |
-| [templates/email.tmpl](templates/email.tmpl) | Every word of the email: the `subject`, `body`, `line`, `rate`, `legs` and `entry` blocks. |
-| [mailer/](mailer/mailer.go) | Sends mail through the Gmail API using an OAuth refresh token. Cleans up `MAIL_TO`. |
+| [templates/email.tmpl](templates/email.tmpl) | Every word of the email: the `subject`, `body`, `heading`, `line`, `rate`, `legs` and `entry` blocks. |
+| [mailer/](mailer/mailer.go) | Sends the HTML mail through the Gmail API using an OAuth refresh token. Cleans up `MAIL_TO`. |
 | [logger/](logger/logger.go) | Timestamped stdout, which ends up in CloudWatch or the Actions log. |
 | [cmd/authorize/](cmd/authorize/main.go) | One-time local helper that creates the Gmail `REFRESH_TOKEN`. |
 | [.github/workflows/daily-email.yml](.github/workflows/daily-email.yml) | The GitHub Actions job. |
@@ -70,11 +70,11 @@ The provider quotes every currency per 1 USD. Here, I used **mid-market** rate f
 
 | Pair | Derived as | Decimals shown |
 |---|---|---|
-| **AUD/VND** (headline) | VND ÷ AUD | 4 |
-| AUD/USD | 1 ÷ AUD | 4 |
+| **AUD/VND** (headline) | VND ÷ AUD | 2 |
+| AUD/USD | 1 ÷ AUD | 2 |
 | USD/VND | VND (read directly) | 0 |
-| CZK/USD | 1 ÷ CZK | 4 |
-| CZK/VND | VND ÷ CZK | 4 |
+| CZK/USD | 1 ÷ CZK | 2 |
+| CZK/VND | VND ÷ CZK | 2 |
 
 - **Why one call:** all five pairs come from the same publication, with one timestamp. Separate calls could each land on a different rate update. The AUD/VND split would then describe a move that never happened at any single moment.
 - **Direction convention:** every rate means "units of QUOTE per 1 BASE" and is named `BASE/QUOTE`. Reciprocals are taken only in `pairDefs` in [rates.go](rates.go). Mixing directions is the classic currency bug, and both versions look like plausible numbers.
@@ -128,13 +128,23 @@ Each run appends one snapshot (publication time plus the three per-USD rates) to
 ### Templates
 
 [templates/email.tmpl](templates/email.tmpl) is compiled into the binary with `//go:embed`
-and parsed at start-up with `text/template`. If the template is broken, the program fails
+and parsed at start-up with `html/template`. If the template is broken, the program fails
 before anything is sent, not halfway through. Go passes it formatted strings and
-directions (`+1`, `0`, `-1`). The template decides the wording. Changing the copy means
-editing that file and redeploying. No code changes are needed.
+directions (`+1`, `0`, `-1`). The template decides the wording and the design. Changing
+either means editing that file and redeploying. No code changes are needed.
 
-The email is plain text, aligned in columns with spaces. It looks the same in every mail
-client, including in dark mode.
+The email is **HTML only**: one template holds the subject and the HTML body, with no
+plain-text version. Each section is an `<h2>` heading and a table. When designing it:
+
+- **Use inline `style="..."` attributes.** Many mail clients drop `<style>` blocks and
+  external stylesheets.
+- **Use tables for layout.** Flexbox and grid are unreliable in email clients.
+- **Every value is escaped.** `html/template` escapes what Go inserts, so `+` arrives as
+  `&#43;` in the source, which clients display as `+`. The subject is unescaped again,
+  because it's a mail header, not HTML.
+
+To preview a design without sending an email, render the view to a file and open it in a
+browser.
 
 ### Failure policy
 
@@ -170,7 +180,9 @@ Secrets never go in the event. Event bodies show up in schedule configs and logs
 [main_test.go](main_test.go) covers the pure functions without any network calls: rate
 parsing, the direction convention, attribution (same direction, opposite legs, one leg
 still, near-zero), rounded legs adding up, history dedupe and cap, entry validation,
-number formatting, key redaction, and a golden test that fixes the whole rendered email.
+number formatting, key redaction, and a golden test that fixes the subject and the email's
+visible text. The golden test ignores tags and styles, so a redesign doesn't break it, but a
+changed word, number or sign does.
 [mailer/mailer_test.go](mailer/mailer_test.go) covers `MAIL_TO` parsing. The network
 wrappers contain no logic, so nothing mocks HTTP.
 
@@ -280,16 +292,45 @@ deploy the code.
 with no AWS account needed. [cron-job.org](https://cron-job.org) starts it at the time
 you choose. GitHub's own `schedule:` trigger can start runs late or skip them.
 
-1. Under **Settings > Secrets and variables > Actions**, add the secrets `CLIENT_ID`,
-   `CLIENT_SECRET`, `REFRESH_TOKEN`, `MAIL_TO` and `EXCHANGERATE_API_KEY`.
-1. Optionally, add a **variable** `EVENT` holding the same JSON as the Lambda input,
-   e.g. `{"entry":{"AUD/VND":18450}}`.
-1. Merge to the default branch. Test it with **Actions > Daily email > Run workflow**.
+#### 1. Add the secrets
+
+In **your own repo** (a fork doesn't copy secrets from the original), go to
+**Settings > Secrets and variables > Actions > Repository secrets** and click
+**New repository secret** for each of these:
+
+| Name | Secret |
+|---|---|
+| `EXCHANGERATE_API_KEY` | your key from the [exchangerate-api dashboard](https://app.exchangerate-api.com) |
+| `CLIENT_ID` | from your `.env` |
+| `CLIENT_SECRET` | from your `.env` |
+| `REFRESH_TOKEN` | from your `.env` (minted by `go run ./cmd/authorize`) |
+| `MAIL_TO` | the address, or several comma-separated: `a@example.com,b@example.com` |
+
+- The name must match exactly, in capitals. A different name counts as missing.
+- The secret is **only the value**, the part after `=` in `.env`. For
+  `EXCHANGERATE_API_KEY=a1b2c3d4e5f6`, paste `a1b2c3d4e5f6`: no name, no `=`, no quotes, no
+  spaces before or after.
+- Use **Repository secrets**, not Environment secrets. The workflow doesn't use an
+  environment, so it can't see those.
+
+Optionally, under the **Variables** tab, add `EVENT` with the same JSON as the Lambda
+input, e.g. `{"entry":{"AUD/VND":18450}}`.
+
+#### 2. Test it by hand
+
+1. Push the workflow to the default branch (`master`). GitHub only runs workflows from it.
+1. Go to **Actions > Daily email > Run workflow**, pick `master`, and run it.
+1. A green run means the email is on its way. The first one says "Testing 1" and has no
+   change figures; they appear from the next publication onwards.
+
+#### 3. Trigger it daily with cron-job.org
+
 1. Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new):
    **Only select repositories** (this one), permission **Actions: Read and write**,
    nothing else.
 1. On cron-job.org, create a job:
-   - **URL:** `https://api.github.com/repos/OWNER/REPO/actions/workflows/daily-email.yml/dispatches`
+   - **URL:** `https://api.github.com/repos/OWNER/REPO/actions/workflows/daily-email.yml/dispatches`,
+     with your GitHub username and repo name
    - **Schedule:** custom, every day at your time, in your timezone (e.g. 05:00 `Asia/Ho_Chi_Minh`).
      cron-job.org handles the timezone, so there's no UTC conversion.
    - **Advanced > Request method:** `POST`
@@ -307,23 +348,48 @@ job fails with `401`: create a new token and paste it into the header.
 History is kept in the Actions cache. If the cache is ever evicted, the next email goes
 out without change figures and the history starts again.
 
+#### 4. When a run fails
+
+The bot's error appears on the run's summary page, under the **send** job. For the full
+output, open the run, click **send**, and expand **Run go run .**: the error is the last
+line before `exit status 1`. Secret values show as `***` there.
+
+| Error | Cause | Fix |
+|---|---|---|
+| `EXCHANGERATE_API_KEY is not set` | Secret missing or misnamed | Add it as in step 1 |
+| `MAIL_TO is not set` / `REFRESH_TOKEN is not set` | Secret missing or misnamed | Add it as in step 1 |
+| `lookup failed: invalid-key` | Wrong API key | Re-paste only the key |
+| `oauth2: "invalid_grant"` | Refresh token wrong, revoked, or expired (7 days while the Google app is in "Testing") | Re-paste it; if that fails, run `go run ./cmd/authorize` and update the secret |
+| `EVENT is not valid JSON` | Typo in the `EVENT` variable | Fix it or delete it |
+
+cron-job.org answering `404` means the URL's `OWNER/REPO` is wrong; `401` or `403` means
+the token is wrong, expired, or lacks **Actions: Read and write**; `422` means the `ref`
+branch doesn't exist.
+
 ## What the email says
 
-Subject: `Testing 2. AUD/VND 18,238.1944 (-1.38%) and CZK/VND 1,230.1171 (+0.17%)`.
+Subject: `Testing 2. AUD/VND 18,238.19 (-1.38%) and CZK/VND 1,230.12 (+0.17%)`.
 The number counts days of stored history, so it restarts if the history is lost.
 
+The body has one section per cross pair: the pair with its split, then its two legs.
+USD/VND is a leg of both, so it appears in each section.
+Each section is a bold heading and a table; its content reads:
+
 ```
-AUD/VND   18,238.1900   -1.38%
+AUD/VND
+AUD/VND     18,238.19   -1.38%
   AUD leg  -1.32pp  AUD weaker vs USD
   VND leg  -0.06pp  VND stronger vs USD
-         -1.15% vs your entry 18,450.0000
+         -1.15% vs your entry 18,450.00
+AUD/USD          0.69   -1.32%
+USD/VND        26,263   -0.06%
 
-AUD/USD        0.6536   -1.32%
-USD/VND        26,300   -0.06%
-CZK/USD        0.0465   +0.31%
-CZK/VND    1,223.4000   +0.25%
-  CZK leg  +0.31pp  CZK stronger vs USD
+CZK/VND
+CZK/VND      1,230.12   +0.17%
+  CZK leg  +0.23pp  CZK stronger vs USD
   VND leg  -0.06pp  VND stronger vs USD
+CZK/USD          0.05   +0.23%
+USD/VND        26,263   -0.06%
 ```
 
 - **%** is a pair's own change since the previous publication.

@@ -3,13 +3,15 @@ package main
 import (
 	_ "embed"
 	"fmt"
+	"html"
+	"html/template"
 	"strings"
-	"text/template"
 	"time"
 )
 
-// Every word of the email lives in the template; Go supplies only formatted numbers and
-// directions. Parsed at start-up, so a broken template fails before anything is sent.
+// Every word of the email lives in the template, an HTML email; Go supplies only formatted
+// numbers and directions. html/template escapes every value it inserts. Parsed at
+// start-up, so a broken template fails before anything is sent.
 //
 //go:embed templates/email.tmpl
 var emailTemplate string
@@ -37,9 +39,14 @@ type emailView struct {
 	Count    int // days of stored history, including today
 	AsOf     string
 	Since    string // "" on the first run
-	Headline pairView
-	Others   []pairView
-	Crosses  []pairView // the split pairs, AUD/VND and CZK/VND, for the subject
+	Sections []sectionView
+}
+
+// sectionView is one cross pair and its two legs: AUD/VND, AUD/USD, USD/VND.
+// USD/VND is a leg of every cross, so it appears in each section.
+type sectionView struct {
+	Name  string
+	Pairs []pairView // the cross pair first
 }
 
 func buildView(cur Snapshot, prev *Snapshot, pairs []Pair, entries map[string]float64, count int) emailView {
@@ -48,8 +55,8 @@ func buildView(cur Snapshot, prev *Snapshot, pairs []Pair, entries map[string]fl
 		byName[p.Name] = p
 	}
 
-	views := make([]pairView, len(pairs))
-	for i, p := range pairs {
+	views := make(map[string]pairView, len(pairs))
+	for _, p := range pairs {
 		v := pairView{Name: p.Name, Rate: formatNum(p.Rate, p.Decimals)}
 		if p.HasPrev() {
 			v.Change = formatHundredths(toHundredths(p.Pct())) + "%"
@@ -61,13 +68,15 @@ func buildView(cur Snapshot, prev *Snapshot, pairs []Pair, entries map[string]fl
 			v.Entry = fmt.Sprintf("%s%% vs your entry %s",
 				formatHundredths(toHundredths((p.Rate/entry-1)*100)), formatNum(entry, p.Decimals))
 		}
-		views[i] = v
+		views[p.Name] = v
 	}
 
-	view := emailView{Count: count, AsOf: publishedDate(cur.PublishedAt), Headline: views[0], Others: views[1:]}
-	for i, p := range pairs {
+	view := emailView{Count: count, AsOf: publishedDate(cur.PublishedAt)}
+	for _, p := range pairs {
 		if p.Split != "" {
-			view.Crosses = append(view.Crosses, views[i])
+			view.Sections = append(view.Sections, sectionView{Name: p.Name, Pairs: []pairView{
+				views[p.Name], views[p.Split+"/USD"], views["USD/VND"],
+			}})
 		}
 	}
 	if prev != nil {
@@ -87,6 +96,8 @@ func buildLegs(base string, attr Attribution) *legsView {
 }
 
 func render(v emailView) (subject string, body string, err error) {
+	// The subject block goes through the same HTML escaping as the body, but a mail
+	// header is plain text, so undo it: "&#43;0.17%" must arrive as "+0.17%".
 	var s, b strings.Builder
 	if err := tmpl.ExecuteTemplate(&s, "subject", v); err != nil {
 		return "", "", err
@@ -94,7 +105,7 @@ func render(v emailView) (subject string, body string, err error) {
 	if err := tmpl.ExecuteTemplate(&b, "body", v); err != nil {
 		return "", "", err
 	}
-	return strings.TrimSpace(s.String()), b.String(), nil
+	return html.UnescapeString(strings.TrimSpace(s.String())), b.String(), nil
 }
 
 func publishedDate(unix int64) string { return time.Unix(unix, 0).UTC().Format("2 Jan 2006") }

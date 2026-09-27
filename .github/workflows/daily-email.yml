@@ -12,8 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -21,7 +21,7 @@ jobs:
       # Cache entries are immutable: save under a new key each run, restore the newest.
       # ponytail: cache can be evicted (lost history = one email without % change);
       # set HISTORY_BUCKET + AWS creds instead if that matters.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: history.json
           key: history-${{ github.run_id }}

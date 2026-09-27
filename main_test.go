@@ -2,7 +2,10 @@ package main
 
 import (
 	"errors"
+	"html"
 	"math"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -142,8 +145,16 @@ func sgn(x float64) float64 {
 	return math.Copysign(1, x)
 }
 
-// The email is the product, so pin it whole: a wording change that makes the VND sign
-// ambiguous again, or a column that stops aligning, fails here.
+// visibleText is what a reader sees: tags dropped, entities decoded, whitespace collapsed.
+// The golden test compares this rather than the HTML, so restyling the email doesn't
+// break it but changing a word, number or sign does.
+func visibleText(body string) string {
+	text := html.UnescapeString(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(body, " "))
+	return strings.Join(strings.Fields(text), " ")
+}
+
+// The email is the product, so pin its content whole: a wording change that makes the VND
+// sign ambiguous again, or a number in the wrong place, fails here.
 func Test_Render_Golden(t *testing.T) {
 	prev := snap(1790294400, 1.4210, 26280, 21.40)
 	cur := snap(1790380800, 1.4400, 26263, 21.35)
@@ -151,32 +162,33 @@ func Test_Render_Golden(t *testing.T) {
 
 	subject, body, err := render(buildView(cur, &prev, pairs, map[string]float64{"AUD/VND": 18450}, 2))
 	assert.Nil(t, err)
-	assert.Equal(t, "Testing 2. AUD/VND 18,238.1944 (-1.38%) and CZK/VND 1,230.1171 (+0.17%)", subject)
-	assert.Equal(t, `Good morning, bee ready to make money today! 🐝 💸 🐝
-
-Rates published 26 Sep 2026, change since 25 Sep 2026.
-
-AUD/VND   18,238.1944   -1.38%
-  AUD leg  -1.32pp  AUD weaker vs USD
-  VND leg  -0.06pp  VND stronger vs USD
-         -1.15% vs your entry 18,450.0000
-
-AUD/USD        0.6944   -1.32%
-USD/VND        26,263   -0.06%
-CZK/USD        0.0468   +0.23%
-CZK/VND    1,230.1171   +0.17%
-  CZK leg  +0.23pp  CZK stronger vs USD
-  VND leg  -0.06pp  VND stronger vs USD
-
-Rates are mid-market. What you receive on a transfer is lower by the provider's fee.
-`, body)
+	assert.Equal(t, "Testing 2. AUD/VND 18,238.19 (-1.38%) and CZK/VND 1,230.12 (+0.17%)", subject)
+	assert.Equal(t, strings.Join([]string{
+		"Good morning, let's start the day with a quick update on the rates. Everything is still hardcoded so my email may sound boring, but I promise to make it more interesting in the future. For now, here is the update:",
+		"Rates published 26 Sep 2026, change since 25 Sep 2026.",
+		"AUD/VND",
+		"AUD/VND 18,238.19 -1.38%",
+		"AUD leg -1.32pp AUD weaker vs USD",
+		"VND leg -0.06pp VND stronger vs USD",
+		"-1.15% vs your entry 18,450.00",
+		"AUD/USD 0.69 -1.32%",
+		"USD/VND 26,263 -0.06%",
+		"CZK/VND",
+		"CZK/VND 1,230.12 +0.17%",
+		"CZK leg +0.23pp CZK stronger vs USD",
+		"VND leg -0.06pp VND stronger vs USD",
+		"CZK/USD 0.05 +0.23%",
+		"USD/VND 26,263 -0.06%",
+		"Rates are mid-market. What you receive on a transfer depends on the provider's fee.",
+	}, " "), visibleText(body))
+	assert.Contains(t, body, "<h2", "section headings are headings")
 }
 
 func Test_Render_FirstRun(t *testing.T) {
 	cur := snap(1790380800, 1.4400, 26263, 21.35)
 	subject, body, err := render(buildView(cur, nil, derivePairs(cur, nil), nil, 1))
 	assert.Nil(t, err)
-	assert.Equal(t, "Testing 1. AUD/VND 18,238.1944 and CZK/VND 1,230.1171", subject, "no change without history")
+	assert.Equal(t, "Testing 1. AUD/VND 18,238.19 and CZK/VND 1,230.12", subject, "no change without history")
 	assert.Contains(t, body, "First run")
 	assert.NotContains(t, body, "leg")
 }

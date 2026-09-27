@@ -40,8 +40,8 @@ func recipients(raw string) string {
 	return strings.Join(out, ", ")
 }
 
-// Send delivers a plain-text mail to every address in MAIL_TO, as the account that granted REFRESH_TOKEN.
-func Send(ctx context.Context, subject string, body string) error {
+// Send delivers an HTML mail to every address in MAIL_TO, as the account that granted REFRESH_TOKEN.
+func Send(ctx context.Context, subject string, htmlBody string) error {
 	to := recipients(os.Getenv("MAIL_TO"))
 	if to == "" {
 		return fmt.Errorf("MAIL_TO is not set")
@@ -58,8 +58,8 @@ func Send(ctx context.Context, subject string, body string) error {
 	}
 
 	// Subjects carry emoji, so they need RFC 2047 encoding to survive the header.
-	raw := fmt.Sprintf("To: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
-		to, mime.QEncoding.Encode("utf-8", subject), body)
+	raw := fmt.Sprintf("To: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n%s",
+		to, mime.QEncoding.Encode("utf-8", subject), htmlBody)
 
 	_, err = srv.Users.Messages.Send("me", &gmail.Message{
 		Raw: base64.URLEncoding.EncodeToString([]byte(raw)),

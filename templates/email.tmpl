@@ -1,38 +1,38 @@
+{{/* The subject is a mail header, not HTML: render() unescapes it. */}}
 {{define "subject" -}}
-Testing {{.Count}}. {{range $i, $p := .Crosses}}{{if $i}} and {{end}}{{$p.Name}} {{$p.Rate}}{{with $p.Change}} ({{.}}){{end}}{{end}}
+Testing {{.Count}}. {{range $i, $s := .Sections}}{{if $i}} and {{end}}{{with index $s.Pairs 0}}{{.Name}} {{.Rate}}{{with .Change}} ({{.}}){{end}}{{end}}{{end}}
 {{- end}}
 
+{{/* Mail clients ignore <style> blocks unevenly, so styles are inline. */}}
 {{define "body" -}}
-Good morning, bee ready to make money today! 🐝 💸 🐝
-
-{{if .Since -}}
-Rates published {{.AsOf}}, change since {{.Since}}.
-{{- else -}}
-Rates published {{.AsOf}}. First run: history starts today, so there is no change yet.
-{{- end}}
-
-{{template "line" .Headline}}
-{{range .Others}}
-{{template "line" .}}
-{{- end}}
-
-Rates are mid-market. What you receive on a transfer is lower by the provider's fee.
+<!DOCTYPE html>
+<html lang="en">
+<body style="margin:0; padding:16px; font-family:Arial, Helvetica, sans-serif; font-size:14px; line-height:1.5; color:#222222;">
+<p>Good morning, let's start the day with a quick update on the rates. Everything is still hardcoded so my email may sound boring, but I promise to make it more interesting in the future. For now, here is the update:</p>
+<p>{{if .Since}}Rates published {{.AsOf}}, change since {{.Since}}.{{else}}Rates published {{.AsOf}}. First run: history starts today, so there is no change yet.{{end}}</p>
+{{range .Sections}}
+<h2 style="margin:24px 0 8px; font-size:16px; font-weight:bold;">{{.Name}}</h2>
+<table role="presentation" style="border-collapse:collapse;">
+{{range .Pairs}}{{template "line" .}}{{end}}</table>
+{{end}}
+<p style="margin-top:24px; font-size:12px; color:#666666;">Rates are mid-market. What you receive on a transfer depends on the provider's fee.</p>
+</body>
+</html>
 {{end}}
 
-{{define "line"}}{{template "rate" .}}{{template "legs" .Legs}}{{template "entry" .}}{{end}}
+{{define "line" -}}
+<tr><td style="padding:2px 16px 2px 0;">{{.Name}}</td><td style="padding:2px 16px 2px 0; text-align:right;">{{.Rate}}</td><td style="padding:2px 0; text-align:right;">{{.Change}}</td></tr>
+{{template "legs" .Legs}}{{template "entry" .}}
+{{- end}}
 
 {{define "legs"}}{{with .}}
-{{- if .Flat}}
-  flat, no move to attribute
-{{- else}}
-  {{.Base}} leg  {{printf "%-8s" (print .Leg "pp")}} {{if gt .LegDir 0}}{{.Base}} stronger vs USD{{else if lt .LegDir 0}}{{.Base}} weaker vs USD{{else}}{{.Base}} unchanged vs USD{{end}}
-  VND leg  {{printf "%-8s" (print .VND "pp")}} {{if gt .VNDDir 0}}VND weaker vs USD{{else if lt .VNDDir 0}}VND stronger vs USD{{else}}VND unchanged vs USD{{end}}
-{{- end}}
-{{- end}}{{end}}
+{{- if .Flat -}}
+<tr><td colspan="3" style="padding:0 0 2px 16px; color:#666666;">flat, no move to attribute</td></tr>
+{{else -}}
+<tr><td style="padding:0 16px 0 16px; color:#666666;">{{.Base}} leg</td><td style="padding:0 16px 0 0; text-align:right; color:#666666;">{{.Leg}}pp</td><td style="padding:0; color:#666666;">{{if gt .LegDir 0}}{{.Base}} stronger vs USD{{else if lt .LegDir 0}}{{.Base}} weaker vs USD{{else}}{{.Base}} unchanged vs USD{{end}}</td></tr>
+<tr><td style="padding:0 16px 2px 16px; color:#666666;">VND leg</td><td style="padding:0 16px 2px 0; text-align:right; color:#666666;">{{.VND}}pp</td><td style="padding:0 0 2px; color:#666666;">{{if gt .VNDDir 0}}VND weaker vs USD{{else if lt .VNDDir 0}}VND stronger vs USD{{else}}VND unchanged vs USD{{end}}</td></tr>
+{{end}}{{end}}{{end}}
 
-{{define "rate" -}}
-{{printf "%-8s %12s" .Name .Rate}}{{with .Change}}  {{printf "%7s" .}}{{end}}
-{{- end}}
-
-{{define "entry"}}{{with .Entry}}
-         {{.}}{{end}}{{end}}
+{{define "entry"}}{{with .Entry -}}
+<tr><td></td><td colspan="2" style="padding:0 0 2px; color:#666666;">{{.}}</td></tr>
+{{end}}{{end}}
