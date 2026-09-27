@@ -8,6 +8,10 @@ No LLM is involved. Every number is computed in Go, and every word of the email 
 [templates/email.tmpl](templates/email.tmpl). See [PLAN.md](PLAN.md) for the design and
 the reasoning behind it.
 
+Based on [Ipanov7/forex-bot](https://github.com/Ipanov7/forex-bot) by Loris Occhipinti.
+This version switches it to AUD/VND with daily email alerts, reports four pairs with
+their daily change, and can run on GitHub Actions as well as AWS Lambda.
+
 ## Getting Started
 
 ### 1. Rate API
@@ -104,6 +108,38 @@ deploy the code.
 1. ???
 1. Profit!
 
+### 4b. Or: GitHub Actions instead of Lambda
+
+[.github/workflows/daily-email.yml](.github/workflows/daily-email.yml) sends the email,
+with no AWS account needed. [cron-job.org](https://cron-job.org) starts it at 05:00
+Vietnam time. GitHub's own `schedule:` trigger can start runs late or skip them.
+
+1. Under **Settings > Secrets and variables > Actions**, add the secrets `CLIENT_ID`,
+   `CLIENT_SECRET`, `REFRESH_TOKEN`, `MAIL_TO` and `EXCHANGERATE_API_KEY`.
+1. Optionally, add a **variable** `EVENT` holding the same JSON as the Lambda input,
+   e.g. `{"entry":{"AUD/VND":18450}}`.
+1. Merge to the default branch. Test it with **Actions > Daily email > Run workflow**.
+1. Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new):
+   **Only select repositories** (this one), permission **Actions: Read and write**,
+   nothing else.
+1. On cron-job.org, create a job:
+   - **URL:** `https://api.github.com/repos/OWNER/forex-bot/actions/workflows/daily-email.yml/dispatches`
+   - **Schedule:** custom, every day at 05:00, timezone `Asia/Ho_Chi_Minh`
+   - **Advanced > Request method:** `POST`
+   - **Advanced > Headers:**
+     `Authorization: Bearer <token>`, `Accept: application/vnd.github+json`,
+     `X-GitHub-Api-Version: 2022-11-28`, `Content-Type: application/json`
+   - **Advanced > Request body:** `{"ref":"master"}`
+   - **Notifications:** turn on "notify on failure"
+
+   Use **Test run**. It should answer `204` and a run appears under Actions.
+
+The token expires, at most a year after you create it. When it does, the cron-job.org
+job fails with `401`: create a new token and paste it into the header.
+
+History is kept in the Actions cache. If the cache is ever evicted, the next email goes
+out without change figures and the history starts again.
+
 ## What the email says
 
 ```
@@ -122,6 +158,6 @@ AUD/VND   18,238.19   -1.38%
 
 ## Author
 
-Loris Occhipinti
+Original project: Loris Occhipinti ([Ipanov7/forex-bot](https://github.com/Ipanov7/forex-bot))
 * ✉️Contact me at: loris@lorisocchipinti.com
 * ⭐Website: https://blog.lorisocchipinti.com

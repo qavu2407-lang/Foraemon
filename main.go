@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"strings"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -18,8 +21,22 @@ type RateRequest struct {
 	Entry map[string]float64 `json:"entry"`
 }
 
+// main runs as a Lambda handler on Lambda, and once otherwise (GitHub Actions, local).
+// Off Lambda, the event comes from EVENT, e.g. EVENT='{"entry":{"AUD/VND":18450}}'.
 func main() {
-	lambda.Start(CheckRate)
+	if os.Getenv("AWS_LAMBDA_RUNTIME_API") != "" {
+		lambda.Start(CheckRate)
+		return
+	}
+	var request RateRequest
+	if event := os.Getenv("EVENT"); event != "" {
+		if err := json.Unmarshal([]byte(event), &request); err != nil {
+			log.Fatalf("EVENT is not valid JSON: %v", err)
+		}
+	}
+	if err := CheckRate(context.Background(), request); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func CheckRate(ctx context.Context, request RateRequest) error {

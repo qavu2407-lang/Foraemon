@@ -1,0 +1,37 @@
+name: Daily email
+
+# Started at 05:00 Asia/Ho_Chi_Minh by cron-job.org via the workflow_dispatch API,
+# not by `schedule:`, which GitHub can delay or skip. See README section 4b.
+on:
+  workflow_dispatch:
+
+concurrency: daily-email
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Runners are fresh each time, so history.json lives in the Actions cache.
+      # Cache entries are immutable: save under a new key each run, restore the newest.
+      # ponytail: cache can be evicted (lost history = one email without % change);
+      # set HISTORY_BUCKET + AWS creds instead if that matters.
+      - uses: actions/cache@v4
+        with:
+          path: history.json
+          key: history-${{ github.run_id }}
+          restore-keys: history-
+
+      - run: go run .
+        env:
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          EXCHANGERATE_API_KEY: ${{ secrets.EXCHANGERATE_API_KEY }}
+          EVENT: ${{ vars.EVENT }}
