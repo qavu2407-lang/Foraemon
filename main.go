@@ -9,25 +9,20 @@ import (
 	"os"
 	"strings"
 
-	"github.com/aws/aws-lambda-go/lambda"
 	"lorisocchipinti.com/gbp-rates/logger"
 	"lorisocchipinti.com/gbp-rates/mailer"
 )
 
-// RateRequest is the EventBridge event. Entry is optional: per pair, the MID-MARKET
+// RateRequest is the optional EVENT input. Entry is optional: per pair, the MID-MARKET
 // rate on the day you converted, e.g. {"entry": {"AUD/VND": 18450}}. Not the effective
 // rate you received: that has a fee taken out, which would show as a permanent gain.
 type RateRequest struct {
 	Entry map[string]float64 `json:"entry"`
 }
 
-// main runs as a Lambda handler on Lambda, and once otherwise (GitHub Actions, local).
-// Off Lambda, the event comes from EVENT, e.g. EVENT='{"entry":{"AUD/VND":18450}}'.
+// main runs once and exits (GitHub Actions, local). The optional event comes from
+// EVENT, e.g. EVENT='{"entry":{"AUD/VND":18450}}'.
 func main() {
-	if os.Getenv("AWS_LAMBDA_RUNTIME_API") != "" {
-		lambda.Start(CheckRate)
-		return
-	}
 	var request RateRequest
 	if event := os.Getenv("EVENT"); event != "" {
 		if err := json.Unmarshal([]byte(event), &request); err != nil {
@@ -55,7 +50,7 @@ func CheckRate(ctx context.Context, request RateRequest) error {
 
 	// History only feeds the change figures. If it can't be read, still send the rates,
 	// but remember the failure: saving now would overwrite the history with one day.
-	history, historyErr := loadHistory(ctx)
+	history, historyErr := loadHistory()
 	if historyErr != nil {
 		logger.Error(fmt.Errorf("history unavailable, sending without change: %w", historyErr))
 	}
@@ -74,7 +69,7 @@ func CheckRate(ctx context.Context, request RateRequest) error {
 
 	history = appendSnapshot(history, snap)
 	if historyErr == nil {
-		if err := saveHistory(ctx, history); err != nil {
+		if err := saveHistory(history); err != nil {
 			logger.Error(fmt.Errorf("saving history: %w", err))
 		}
 	}

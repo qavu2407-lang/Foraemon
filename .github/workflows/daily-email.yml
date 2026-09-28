@@ -20,7 +20,7 @@ jobs:
       # Runners are fresh each time, so history.json lives in the Actions cache.
       # Cache entries are immutable: save under a new key each run, restore the newest.
       # ponytail: cache can be evicted (lost history = one email without % change);
-      # set HISTORY_BUCKET + AWS creds instead if that matters.
+      # commit history.json to a branch instead if that matters.
       - uses: actions/cache@v6
         with:
           path: history.json

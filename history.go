@@ -1,17 +1,9 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 // The whole history is one small JSON array: about 85 bytes per day, so a decade is
@@ -23,8 +15,8 @@ const (
 
 // loadHistory returns the stored snapshots, oldest first. A missing history is not an
 // error: it's the first run.
-func loadHistory(ctx context.Context) ([]Snapshot, error) {
-	data, err := readHistory(ctx)
+func loadHistory() ([]Snapshot, error) {
+	data, err := readHistory()
 	if err != nil || data == nil {
 		return nil, err
 	}
@@ -35,58 +27,21 @@ func loadHistory(ctx context.Context) ([]Snapshot, error) {
 	return h, nil
 }
 
-func saveHistory(ctx context.Context, h []Snapshot) error {
+func saveHistory(h []Snapshot) error {
 	data, err := json.Marshal(h)
 	if err != nil {
-		return err
-	}
-	if bucket := os.Getenv("HISTORY_BUCKET"); bucket != "" {
-		client, err := s3Client(ctx)
-		if err != nil {
-			return err
-		}
-		_, err = client.PutObject(ctx, &s3.PutObjectInput{
-			Bucket: aws.String(bucket), Key: aws.String(historyKey), Body: bytes.NewReader(data),
-		})
 		return err
 	}
 	return os.WriteFile(historyFile(), data, 0o644)
 }
 
 // readHistory returns nil data, not an error, when nothing has been stored yet.
-// Lambda uses S3 (HISTORY_BUCKET); local runs use a file, since Lambda's own disk
-// doesn't survive between invocations.
-func readHistory(ctx context.Context) ([]byte, error) {
-	if bucket := os.Getenv("HISTORY_BUCKET"); bucket != "" {
-		client, err := s3Client(ctx)
-		if err != nil {
-			return nil, err
-		}
-		out, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(historyKey)})
-		var missing *types.NoSuchKey
-		if errors.As(err, &missing) {
-			return nil, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-		defer out.Body.Close()
-		return io.ReadAll(out.Body)
-	}
-
+func readHistory() ([]byte, error) {
 	data, err := os.ReadFile(historyFile())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	return data, err
-}
-
-func s3Client(ctx context.Context) (*s3.Client, error) {
-	cfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return s3.NewFromConfig(cfg), nil
 }
 
 func historyFile() string {

@@ -1,37 +1,54 @@
 # Foraemon: A Forex Bot that automatically fetches, explains – and augments Human Intelligence
 
-A daily email reporting currency rates based on personal use. I chose AUD/VND, AUD/USD, USD/VND, CZK/USD, and CZK/VND.
+## Project Introduction
 
-This project runs in three phases, depending on different development stages and use cases. 
+### Problem definition
+
+- **Motivation**:  I want a Forex bot that automatically sends alerts on exchange rates daily and explains any % changes so I can (1) enrich my knowledge on the matter more, and (2) know better when to wait or send money back home to spend. Moreover, I want the agent to make me really learn and acquire the knowledge, not merely consuming. 
+- **Current solutions**: Only sends alerts, no custom agent that pulls news and explains in a way that allows me to customise knowledge and REALLY makes me learn. There are commercial products with expert analysis; however, my finance cannot afford them because they often are really expensive or for commercial use only. Moreover, Vietnamese-supported products are very limited. 
+- **Goal**: A fully working forex bot (possibly agent in future development) that can pull new sources from the 3 countries, can reason through why the conversions today drop or increase, and send alerts daily. But in every email, the UI and content will be displayed in a way that can sharpen my critical thinking and help me to acquire the knowledge, not merely consume content. AND it should be as cheap as possible because I'm broke af... 
+- **Success metrics**: 
+    1. *Delivery*: a correct daily email lands 7 of 7 days with no manual run. 
+    2. *Cost*: runs at ~$5USD/month. 
+    3. *Explanation quality*: each email attributes the move to the right leg + >=1 real headline; spot-check vs a source. 
+    4. *Learning*: I can actually predict before revealing >=80% of emails.
+    5. *Observability & Monitoring*: 100% all failures are recorded, alerted, and traceable for debugging (traces, logs, events).
+
+
+## Scope and Development stages
+
+This project used [Ipanov7/forex-bot](https://github.com/Ipanov7/forex-bot) by Loris Occhipinti as a base. A daily email reporting currency rates based on personal preference. I chose AUD/VND, AUD/USD, USD/VND, CZK/USD, and CZK/VND.
+
+ runs in three phases, depending on different development stages and use cases. 
 
 1. Phase 1: Automatically fetching rates, calculating simple % rate changes and sending emails only.
     -  No LLM is involved. Every number is computed in Go, and every word of the email lives in
 [templates/email.tmpl](templates/email.tmpl).
     - Hardcoded, reliable but limited use.
-2. Phase 2: Automatically fetching news sources and explaining the changes.
-    - LLM is involved for synthesis and reasoning. Possible agentic loop involved for dynamic news fetch based on layer.
+2. Phase 2: Automatically fetching news sources and explaining the changes WITH recommended action points / possible trends or predictions.
+    - LLM is involved for synthesis and reasoning. Possible agentic loop involved for dynamic news fetch.
     - Design to be updated in later versions.
 3. Phase 3. Human Autonomy Layer
     - A governance layer will be added to ensure humans TRULY learns the signals and make sound judgments on their own. 
     - Design to be updated in later versions.
 
-Based on [Ipanov7/forex-bot](https://github.com/Ipanov7/forex-bot) by Loris Occhipinti.
+
 
 ## Architecture: Foraemon V1
 
-### Overview: Phase 1
+### Overview
 
  Once a day, a trigger runs the bot. The bot fetches one set of exchange rates, compares
 them with the previous day's, and emails the result. It then exits. Nothing runs between
 emails.
 
 ```
-  cron-job.org (your time)                      EventBridge cron
-        │  POST workflow_dispatch                     │
-        ▼                                             ▼
-  GitHub Actions: go run .                      AWS Lambda: bootstrap
-  history.json in the Actions cache             history.json in S3
-        └──────────────────────┬──────────────────────┘
+                    cron-job.org (your time)
+                               │  POST workflow_dispatch
+                               ▼
+                    GitHub Actions: go run .
+                    history.json in the Actions cache
+                               │
                                ▼
                     CheckRate(ctx, request)                    main.go
                                │
@@ -46,7 +63,7 @@ emails.
        └───────────────────────┴─────────────────────────────┘
 ```
 
-The same binary runs in both places. `main()` checks for `AWS_LAMBDA_RUNTIME_API`. If it is set, the binary runs as a Lambda handler. If not, it runs once and exits, and the optional event is read from the `EVENT` environment variable. The trigger decides when the email goes out. The code has no clock logic.
+The binary runs once and exits, the same on GitHub Actions and locally. The optional event is read from the `EVENT` environment variable. The trigger decides when the email goes out. The code has no clock logic.
 
 ### Files
 
@@ -54,11 +71,11 @@ The same binary runs in both places. `main()` checks for `AWS_LAMBDA_RUNTIME_API
 |---|---|
 | [main.go](main.go) | Entry point. Runs the steps in order and decides what counts as fatal. |
 | [rates.go](rates.go) | Fetches and parses rates, derives the pairs, splits the AUD/VND and CZK/VND moves, formats numbers. |
-| [history.go](history.go) | Reads and writes `history.json`, from S3 or a local file. Finds the previous publication. |
+| [history.go](history.go) | Reads and writes `history.json`. Finds the previous publication. |
 | [templates.go](templates.go) | Turns the numbers into display strings and renders the embedded template. |
 | [templates/email.tmpl](templates/email.tmpl) | Every word of the email: the `subject`, `body`, `heading`, `line`, `rate`, `legs` and `entry` blocks. |
 | [mailer/](mailer/mailer.go) | Sends the HTML mail through the Gmail API using an OAuth refresh token. Cleans up `MAIL_TO`. |
-| [logger/](logger/logger.go) | Timestamped stdout, which ends up in CloudWatch or the Actions log. |
+| [logger/](logger/logger.go) | Timestamped stdout, which ends up in the Actions log. |
 | [cmd/authorize/](cmd/authorize/main.go) | One-time local helper that creates the Gmail `REFRESH_TOKEN`. |
 | [.github/workflows/daily-email.yml](.github/workflows/daily-email.yml) | The GitHub Actions job. |
 
@@ -112,7 +129,6 @@ Each run appends one snapshot (publication time plus the three per-USD rates) to
 
 | Where it runs | Where history lives |
 |---|---|
-| Lambda | S3 object `history.json` in `HISTORY_BUCKET` |
 | GitHub Actions | `history.json` in the Actions cache, saved under a new key each run and restored from the newest |
 | Locally | `./history.json`, or `HISTORY_FILE` |
 
@@ -121,9 +137,7 @@ Each run appends one snapshot (publication time plus the three per-USD rates) to
   against the last *older* publication, never against itself.
 - **Why one JSON file and not a database:** ten years of data fits in ~300 KB, and the
   only query is "the previous entry". A database would add a driver, a schema and
-  credentials. On AWS, RDS would also need a VPC and a NAT gateway (~$45/month) to
-  store 31 KB a year.
-- **Not yet tested:** the S3 path has only been compiled, never run against a real bucket.
+  credentials, to store 31 KB a year.
 
 ### Templates
 
@@ -159,7 +173,7 @@ the run. Anything that only affects the change figures does not.
 | History can't be saved | Logged. The email is still sent. |
 | Move too small to split | The email prints "flat". This is a normal outcome, not an error. |
 | Template is broken | Fails at start-up |
-| Gmail send fails | The run fails (a Lambda error, or a red Actions run) |
+| Gmail send fails | The run fails (a red Actions run) |
 
 There are no retries. With one run a day, a failed run is followed by tomorrow's normal
 email.
@@ -169,9 +183,9 @@ email.
 | Environment variables (secrets) | Event (optional) |
 |---|---|
 | `EXCHANGERATE_API_KEY` | `{"entry": {"AUD/VND": 18450}}` |
-| `CLIENT_ID`, `CLIENT_SECRET`, `REFRESH_TOKEN` | Lambda: the EventBridge input |
-| `MAIL_TO` (comma-separated) | Actions/local: the `EVENT` variable |
-| `HISTORY_BUCKET` or `HISTORY_FILE` | |
+| `CLIENT_ID`, `CLIENT_SECRET`, `REFRESH_TOKEN` | Set as the `EVENT` variable |
+| `MAIL_TO` (comma-separated) | |
+| `HISTORY_FILE` (optional) | |
 
 Secrets never go in the event. Event bodies show up in schedule configs and logs.
 
@@ -200,7 +214,7 @@ key in `EXCHANGERATE_API_KEY`.
 
 One call to `/latest/USD` supplies all five pairs, so they always come from the same
 publication. The key travels in the URL path for this API, so `fetchRates` never logs the
-URL and scrubs the key out of network errors before they reach CloudWatch.
+URL and scrubs the key out of network errors before they reach the logs.
 
 ### 2. Gmail
 
@@ -226,28 +240,11 @@ re-running the authorize step.
 ### 3. Rate history
 
 "% change" means change since the previous publication, the convention rate platforms use.
-That needs yesterday's rates, and Lambda keeps nothing between runs, so each run appends one
+That needs yesterday's rates, and each run starts fresh, so each run appends one
 snapshot to a small JSON file (~31 KB a year).
 
 - **Locally**, it's `./history.json` (gitignored), or wherever `HISTORY_FILE` points.
-- **On Lambda**, create an S3 bucket, set `HISTORY_BUCKET` to its name, and give the
-  function's role this policy:
-  ```json
-  {
-      "Version": "2012-10-17",
-      "Statement": [{
-          "Effect": "Allow",
-          "Action": ["s3:GetObject", "s3:PutObject"],
-          "Resource": "arn:aws:s3:::YOUR-BUCKET/history.json"
-      }, {
-          "Effect": "Allow",
-          "Action": "s3:ListBucket",
-          "Resource": "arn:aws:s3:::YOUR-BUCKET"
-      }]
-  }
-  ```
-  `ListBucket` is what lets S3 answer "not found" on the first run instead of "access
-  denied".
+- **On GitHub Actions**, the workflow keeps it in the Actions cache (see Deploy).
 
 The first run has nothing to compare against and says so; change figures appear from the
 second publication onwards. If the history can't be read, the email still goes out without
@@ -255,41 +252,8 @@ change figures, and the history is left untouched rather than overwritten.
 
 ### 4. Deploy
 
-This bot runs on AWS Lambda, so it's necessary to create a zip archive (sigh) to
-deploy the code.
-
-1. Run `./zip.sh` to generate the archive.
-1. Create the function on the **`provided.al2023`** runtime with handler `bootstrap`
-   (the old `go1.x` runtime is retired).
-1. Copy every variable from your `.env` into the function's environment variables —
-   `.env` itself is only used for local runs.
-1. Set the input data. It's optional: `{}` works. To also see how far each pair is from
-   where you converted, add an `entry` per pair:
-    ```json
-    {
-        "entry": {
-            "AUD/VND": 18450.00
-        }
-    }
-    ```
-   **Use the mid-market rate on the day you converted**, not the rate you actually got.
-   What you received had a fee taken out (~0.4–2% on Wise), which is several times a
-   typical daily move and would show up as a permanent phantom gain. The old
-   `from`/`to`/`avg_rate` fields are gone and ignored if present.
-1. Schedule it for **09:00 Asia/Ho_Chi_Minh**. EventBridge cron is UTC and ICT is
-   UTC+7 with no daylight saving, so that is 02:00 UTC:
-    ```
-    cron(0 2 * * ? *)
-    ```
-   One run, one email. The handler has no clock logic of its own — change the
-   schedule, not the code, if you want a different time.
-1. ???
-1. Profit!
-
-### 4b. Or: GitHub Actions instead of Lambda
-
 [.github/workflows/daily-email.yml](.github/workflows/daily-email.yml) sends the email,
-with no AWS account needed. [cron-job.org](https://cron-job.org) starts it at the time
+and [cron-job.org](https://cron-job.org) starts it at the time
 you choose. GitHub's own `schedule:` trigger can start runs late or skip them.
 
 #### 1. Add the secrets
@@ -313,8 +277,7 @@ In **your own repo** (a fork doesn't copy secrets from the original), go to
 - Use **Repository secrets**, not Environment secrets. The workflow doesn't use an
   environment, so it can't see those.
 
-Optionally, under the **Variables** tab, add `EVENT` with the same JSON as the Lambda
-input, e.g. `{"entry":{"AUD/VND":18450}}`.
+Optionally, under the **Variables** tab, add `EVENT` with the event JSON, e.g. `{"entry":{"AUD/VND":18450}}`.
 
 #### 2. Test it by hand
 
@@ -402,5 +365,3 @@ USD/VND        26,263   -0.06%
 ## Author
 
 Original project: Loris Occhipinti ([Ipanov7/forex-bot](https://github.com/Ipanov7/forex-bot))
-* ✉️Contact me at: loris@lorisocchipinti.com
-* ⭐Website: https://blog.lorisocchipinti.com

@@ -1,10 +1,6 @@
 # ASDF
 .tool-versions
 
-# Binaries and packages
-*.zip
-bootstrap
-
 # Environment files
 .env
 
