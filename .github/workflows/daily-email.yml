@@ -43,5 +43,7 @@ jobs:
           REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
           EXCHANGERATE_API_KEY: ${{ secrets.EXCHANGERATE_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          model: ${{ vars.MODEL }}
           EVENT: ${{ vars.EVENT }}
           MODE: ${{ inputs.mode }}
