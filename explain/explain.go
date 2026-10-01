@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
+	"unicode"
 
 	"lorisocchipinti.com/gbp-rates/logger"
 )
@@ -51,7 +53,7 @@ Rules:
 Output:
 - headlines: the three most important stories for these currencies today, three different stories. Each is one short factual sentence (at most 20 words) saying what happened and who reported it. No causes, no effects, no explanation: that belongs in macro. Set currency to the one most affected (or ALL).
 - macro: the full reasoning, one entry per driver, in this order: the common US dollar factor (currency USD) if there is one, then AUD, CZK and VND. Each entry is a paragraph of 3 to 6 sentences: what moved and by which leg, the cause and the evidence for it, how sources agree or disagree, and what it means for someone converting AUD or CZK into VND.
-- scenarios: 2 or 3 "if / then" pairs tied to the calendar events or the technical levels.`
+- scenarios: 2 or 3 "if / then" pairs tied to the calendar events or the technical levels. The email prints them as "If <if>, then <then>", so "if" is a clause with no leading "If" and no full stop at the end, and "then" is a clause with no leading "then" that starts in lowercase (unless it starts with a name such as AUD or the Fed).`
 
 var claimSchema = map[string]any{
 	"type":                 "object",
@@ -189,5 +191,46 @@ func (e Explanation) checked(nHeadlines int) Explanation {
 	if len(e.Scenarios) > 3 {
 		e.Scenarios = e.Scenarios[:3]
 	}
+	for i, s := range e.Scenarios {
+		e.Scenarios[i] = Scenario{If: ifClause(s.If), Then: thenClause(s.Then)}
+	}
 	return e
+}
+
+// ifClause and thenClause make a scenario read as one sentence, "If <if>, then <then>.",
+// whatever the model's punctuation: it sometimes ends the condition with a full stop
+// or starts the outcome with a capital.
+func ifClause(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > 3 && strings.EqualFold(s[:3], "if ") {
+		s = s[3:]
+	}
+	return strings.TrimRight(s, " .,;:")
+}
+
+func thenClause(s string) string {
+	s = strings.TrimLeft(strings.TrimSpace(s), ", ")
+	if len(s) > 5 && strings.EqualFold(s[:5], "then ") {
+		s = s[5:]
+	}
+	// Lowercase the first letter unless the first word is an acronym or a name: "The
+	// dollar" becomes "the dollar", but "AUD/VND" and "ECB" stay as they are.
+	if r := []rune(s); len(r) > 1 && unicode.IsUpper(r[0]) && unicode.IsLower(r[1]) && !properNoun(s) {
+		r[0] = unicode.ToLower(r[0])
+		s = string(r)
+	}
+	if s != "" && !strings.ContainsAny(s[len(s)-1:], ".!?") {
+		s += "."
+	}
+	return s
+}
+
+// properNoun reports whether s starts with a name that keeps its capital mid-sentence.
+func properNoun(s string) bool {
+	for _, name := range []string{"Fed ", "Friday", "Monday", "Tuesday", "Wednesday", "Thursday", "Saturday", "Sunday", "Australia", "Czech", "Vietnam", "US ", "FXStreet", "Lagarde", "Powell", "Waller"} {
+		if strings.HasPrefix(s, name) {
+			return true
+		}
+	}
+	return false
 }
