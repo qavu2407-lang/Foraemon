@@ -1,91 +1,11 @@
-package main
+package rates
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"math"
-	"net/http"
-	"os"
 	"strconv"
 	"strings"
 )
-
-// needed are the currencies the five pairs are built from.
-var needed = []string{"AUD", "VND", "CZK"}
-
-// Snapshot is one published set of rates, quoted per 1 USD as the provider sends them.
-type Snapshot struct {
-	PublishedAt int64              `json:"published_at"`
-	PerUSD      map[string]float64 `json:"per_usd"`
-}
-
-type latestResponse struct {
-	Result          string             `json:"result"`
-	ErrorType       string             `json:"error-type"`
-	TimeLastUpdate  int64              `json:"time_last_update_unix"`
-	ConversionRates map[string]float64 `json:"conversion_rates"`
-}
-
-// fetchRates makes one call for every currency, so all five pairs come from the same
-// publication. Separate calls could straddle an update and attribute a move that never
-// happened at any single moment.
-func fetchRates(ctx context.Context) (Snapshot, error) {
-	apikey := os.Getenv("EXCHANGERATE_API_KEY")
-	if apikey == "" {
-		return Snapshot{}, fmt.Errorf("EXCHANGERATE_API_KEY is not set")
-	}
-
-	// The key travels in the path, so this URL is a secret: never log it.
-	url := fmt.Sprintf("https://v6.exchangerate-api.com/v6/%s/latest/USD", apikey)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return Snapshot{}, redact(err, apikey)
-	}
-
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return Snapshot{}, redact(err, apikey)
-	}
-	defer res.Body.Close()
-
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return Snapshot{}, err
-	}
-
-	snap, err := parseRates(body)
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("rate api returned %s: %w", res.Status, err)
-	}
-	return snap, nil
-}
-
-func parseRates(data []byte) (Snapshot, error) {
-	var resp latestResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return Snapshot{}, err
-	}
-	if resp.Result != "success" {
-		return Snapshot{}, fmt.Errorf("lookup failed: %s", resp.ErrorType)
-	}
-	if resp.TimeLastUpdate == 0 {
-		return Snapshot{}, fmt.Errorf("response has no publication time")
-	}
-
-	// Keep only what the pairs need: the stored history stays small, and a currency
-	// the provider stops sending fails loudly here instead of as a division by zero.
-	perUSD := make(map[string]float64, len(needed))
-	for _, code := range needed {
-		rate := resp.ConversionRates[code]
-		if rate <= 0 {
-			return Snapshot{}, fmt.Errorf("response has no usable %s rate", code)
-		}
-		perUSD[code] = rate
-	}
-	return Snapshot{PublishedAt: resp.TimeLastUpdate, PerUSD: perUSD}, nil
-}
 
 // Every rate is "units of QUOTE per 1 BASE" and named BASE/QUOTE. The provider quotes
 // everything per 1 USD, i.e. as USD/xxx, so the reciprocals are taken here and nowhere
@@ -100,9 +20,9 @@ var pairDefs = []struct {
 	rate     func(perUSD map[string]float64) float64
 }{
 	{"AUD/VND", 2, "AUD", func(u map[string]float64) float64 { return u["VND"] / u["AUD"] }},
-	{"AUD/USD", 2, "", func(u map[string]float64) float64 { return 1 / u["AUD"] }},
+	{"AUD/USD", 4, "", func(u map[string]float64) float64 { return 1 / u["AUD"] }},
 	{"USD/VND", 0, "", func(u map[string]float64) float64 { return u["VND"] }},
-	{"CZK/USD", 2, "", func(u map[string]float64) float64 { return 1 / u["CZK"] }},
+	{"CZK/USD", 4, "", func(u map[string]float64) float64 { return 1 / u["CZK"] }},
 	{"CZK/VND", 2, "CZK", func(u map[string]float64) float64 { return u["VND"] / u["CZK"] }},
 }
 
@@ -120,7 +40,7 @@ func (p Pair) HasPrev() bool { return p.Prev > 0 }
 // platforms use for "% change".
 func (p Pair) Pct() float64 { return (p.Rate/p.Prev - 1) * 100 }
 
-func derivePairs(cur Snapshot, prev *Snapshot) []Pair {
+func DerivePairs(cur Snapshot, prev *Snapshot) []Pair {
 	pairs := make([]Pair, len(pairDefs))
 	for i, def := range pairDefs {
 		pairs[i] = Pair{Name: def.name, Rate: def.rate(cur.PerUSD), Decimals: def.decimals, Split: def.split}
@@ -144,7 +64,7 @@ type Attribution struct {
 // flatBelow is half the smallest displayed step: anything smaller rounds to 0.00%.
 const flatBelow = 0.005
 
-func attribute(cross, base, usdvnd Pair) Attribution {
+func Attribute(cross, base, usdvnd Pair) Attribution {
 	total := cross.Pct()
 	if math.Abs(total) < flatBelow {
 		return Attribution{Total: total, Flat: true}
@@ -160,8 +80,8 @@ func attribute(cross, base, usdvnd Pair) Attribution {
 // hundredths rounds to the displayed precision (0.01%) so the legs add up to the total
 // exactly: the larger leg absorbs any rounding difference. A column that doesn't add up
 // undermines every other number in the email.
-func (a Attribution) hundredths() (total, base, vnd int64) {
-	total, base, vnd = toHundredths(a.Total), toHundredths(a.BaseLeg), toHundredths(a.VNDLeg)
+func (a Attribution) Hundredths() (total, base, vnd int64) {
+	total, base, vnd = ToHundredths(a.Total), ToHundredths(a.BaseLeg), ToHundredths(a.VNDLeg)
 	if diff := total - base - vnd; diff != 0 {
 		if math.Abs(a.BaseLeg) >= math.Abs(a.VNDLeg) {
 			base += diff
@@ -172,17 +92,17 @@ func (a Attribution) hundredths() (total, base, vnd int64) {
 	return total, base, vnd
 }
 
-func toHundredths(pct float64) int64 { return int64(math.Round(pct * 100)) }
+func ToHundredths(pct float64) int64 { return int64(math.Round(pct * 100)) }
 
-// formatHundredths signs non-zero values only: "+0.00" would claim a direction.
-func formatHundredths(h int64) string {
+// FormatHundredths signs non-zero values only: "+0.00" would claim a direction.
+func FormatHundredths(h int64) string {
 	if h == 0 {
 		return "0.00"
 	}
 	return fmt.Sprintf("%+.2f", float64(h)/100)
 }
 
-func sign(h int64) int {
+func Sign(h int64) int {
 	switch {
 	case h > 0:
 		return 1
@@ -192,8 +112,8 @@ func sign(h int64) int {
 	return 0
 }
 
-// formatNum renders a positive rate with thousands separators: 18502.54 -> 18,502.54.
-func formatNum(v float64, decimals int) string {
+// FormatNum renders a positive rate with thousands separators: 18502.54 -> 18,502.54.
+func FormatNum(v float64, decimals int) string {
 	whole, frac, _ := strings.Cut(strconv.FormatFloat(v, 'f', decimals, 64), ".")
 	var b strings.Builder
 	for i, r := range whole {
@@ -206,4 +126,22 @@ func formatNum(v float64, decimals int) string {
 		b.WriteString("." + frac)
 	}
 	return b.String()
+}
+
+// ValidateEntries rejects unknown pair names and non-positive rates, so a typo in the
+// event fails loudly instead of silently dropping the line or dividing by zero.
+func ValidateEntries(entries map[string]float64) error {
+	for name, rate := range entries {
+		known := false
+		for _, def := range pairDefs {
+			known = known || def.name == name
+		}
+		if !known {
+			return fmt.Errorf("entry %q is not a reported pair (use AUD/VND, AUD/USD, USD/VND, CZK/USD or CZK/VND)", name)
+		}
+		if rate <= 0 {
+			return fmt.Errorf("entry for %s must be a positive rate, got %v", name, rate)
+		}
+	}
+	return nil
 }

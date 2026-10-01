@@ -3,14 +3,17 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"os"
 	"strings"
+	"time"
 
+	"lorisocchipinti.com/gbp-rates/email"
+	"lorisocchipinti.com/gbp-rates/explain"
 	"lorisocchipinti.com/gbp-rates/logger"
 	"lorisocchipinti.com/gbp-rates/mailer"
+	"lorisocchipinti.com/gbp-rates/rates"
 )
 
 // RateRequest is the optional EVENT input. Entry is optional: per pair, the MID-MARKET
@@ -21,8 +24,16 @@ type RateRequest struct {
 }
 
 // main runs once and exits (GitHub Actions, local). The optional event comes from
-// EVENT, e.g. EVENT='{"entry":{"AUD/VND":18450}}'.
+// EVENT, e.g. EVENT='{"entry":{"AUD/VND":18450}}'. MODE=record only stores today's rates,
+// for a second schedule that records a fixed time of day without sending an email.
 func main() {
+	if os.Getenv("MODE") == "record" {
+		if _, _, err := record(context.Background()); err != nil {
+			fail(err)
+		}
+		return
+	}
+
 	var request RateRequest
 	if event := os.Getenv("EVENT"); event != "" {
 		if err := json.Unmarshal([]byte(event), &request); err != nil {
@@ -43,67 +54,67 @@ func fail(err error) {
 	log.Fatal(err)
 }
 
+// CheckRate is the daily run: rates, then the evidence and its explanation, then the email.
 func CheckRate(ctx context.Context, request RateRequest) error {
-	if err := validateEntries(request.Entry); err != nil {
+	if err := rates.ValidateEntries(request.Entry); err != nil {
 		return err
 	}
-
-	// History only feeds the change figures. If it can't be read, still send the rates,
-	// but remember the failure: saving now would overwrite the history with one day.
-	history, historyErr := loadHistory()
-	if historyErr != nil {
-		logger.Error(fmt.Errorf("history unavailable, sending without change: %w", historyErr))
+	history, snap, err := record(ctx)
+	if err != nil && len(history) == 0 {
+		return err // no rates at all
+	}
+	if err != nil {
+		logger.Error(err) // rates fetched, history not saved: send anyway
 	}
 
-	logger.Log("Fetching rates...")
-	snap, err := fetchRates(ctx)
+	prev := rates.Previous(history, snap) // strictly older, so not today's own snapshot
+	pairs := rates.DerivePairs(snap, prev)
+	rows := rates.PeriodRows(history, snap, pairs)
+	b := explain.Gather(ctx, snap, rows, time.Now())
+
+	subject, body, err := email.Render(email.Build(snap, prev, pairs, request.Entry, rows, b))
 	if err != nil {
 		return err
 	}
-
-	prev := previous(history, snap)
-	pairs := derivePairs(snap, prev)
-	for _, p := range pairs {
-		logger.Log(fmt.Sprintf("%s %s", p.Name, formatNum(p.Rate, p.Decimals)))
-	}
-
-	history = appendSnapshot(history, snap)
-	if historyErr == nil {
-		if err := saveHistory(history); err != nil {
-			logger.Error(fmt.Errorf("saving history: %w", err))
+	// PREVIEW_FILE writes the email to a file instead of sending it, plus what the model
+	// was sent and wrote beside it as .json, to check the design and the explanation.
+	if f := os.Getenv("PREVIEW_FILE"); f != "" {
+		logger.Log(fmt.Sprintf("Subject: %s\nWriting preview to %s", subject, f))
+		model, _ := json.MarshalIndent(map[string]any{"input": b.Input, "output": b.Explanation}, "", "  ")
+		if err := os.WriteFile(strings.TrimSuffix(f, ".html")+".json", model, 0o644); err != nil {
+			return err
 		}
-	}
-
-	// ponytail: the count is days of stored history, so it restarts if history is lost
-	// and stops at keepSnapshots (400). A real send counter would need its own storage.
-	subject, body, err := render(buildView(snap, prev, pairs, request.Entry, len(history)))
-	if err != nil {
-		return err
+		return os.WriteFile(f, []byte(body), 0o644)
 	}
 	logger.Log("Sending email...")
 	return mailer.Send(ctx, subject, body)
 }
 
-// validateEntries rejects unknown pair names and non-positive rates, so a typo in the
-// event fails loudly instead of silently dropping the line or dividing by zero.
-func validateEntries(entries map[string]float64) error {
-	for name, rate := range entries {
-		known := false
-		for _, def := range pairDefs {
-			known = known || def.name == name
-		}
-		if !known {
-			return fmt.Errorf("entry %q is not a reported pair (use AUD/VND, AUD/USD, USD/VND, CZK/USD or CZK/VND)", name)
-		}
-		if rate <= 0 {
-			return fmt.Errorf("entry for %s must be a positive rate, got %v", name, rate)
-		}
-	}
-	return nil
-}
+// record fetches the latest rates and appends them to the history. It returns the history
+// with today's snapshot last. A failed fetch returns no history; a history that can't be
+// read or saved returns the snapshot alone plus the error, and the file is left untouched
+// rather than overwritten with a single day.
+func record(ctx context.Context) ([]rates.Snapshot, rates.Snapshot, error) {
+	history, historyErr := rates.LoadHistory()
+	// A missing seed isn't an error, so say how much history there is: 1 means it's gone.
+	logger.Log(fmt.Sprintf("History: %d publications", len(history)))
 
-// redact keeps the key out of the logs: net/http wraps failures in a *url.Error
-// that prints the whole URL, and the key lives in the path.
-func redact(err error, apikey string) error {
-	return errors.New(strings.ReplaceAll(err.Error(), apikey, "REDACTED"))
+	logger.Log("Fetching rates...")
+	snap, err := rates.FetchLatest(ctx)
+	if err != nil {
+		return nil, rates.Snapshot{}, err
+	}
+	logger.Log("Published " + rates.PublishedTime(snap.PublishedAt))
+	for _, p := range rates.DerivePairs(snap, nil) {
+		logger.Log(fmt.Sprintf("%s %s", p.Name, rates.FormatNum(p.Rate, p.Decimals)))
+	}
+
+	if historyErr != nil {
+		return []rates.Snapshot{snap}, snap, fmt.Errorf("history unavailable, not saved: %w", historyErr)
+	}
+	history = rates.AppendSnapshot(history, snap)
+	if err := rates.SaveHistory(history); err != nil {
+		return history, snap, fmt.Errorf("saving history: %w", err)
+	}
+	return history, snap, nil
 }

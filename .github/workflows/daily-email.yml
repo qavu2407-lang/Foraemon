@@ -1,9 +1,18 @@
 name: Daily email
 
-# Started at 05:00 Asia/Ho_Chi_Minh by cron-job.org via the workflow_dispatch API,
-# not by `schedule:`, which GitHub can delay or skip. See README section 4b.
+# Started by two cron-job.org jobs via the workflow_dispatch API, not by `schedule:`,
+# which GitHub can delay or skip. The request body picks the mode:
+#   {"ref":"master","inputs":{"mode":"record"}}  store today's rates, no email
+#   {"ref":"master","inputs":{"mode":"send"}}    the email (also stores the rates)
+# A body without inputs sends the email.
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: record stores the rates only; send also emails them
+        type: choice
+        options: [send, record]
+        default: send
 
 concurrency: daily-email
 
@@ -35,3 +44,4 @@ jobs:
           MAIL_TO: ${{ secrets.MAIL_TO }}
           EXCHANGERATE_API_KEY: ${{ secrets.EXCHANGERATE_API_KEY }}
           EVENT: ${{ vars.EVENT }}
+          MODE: ${{ inputs.mode }}

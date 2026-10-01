@@ -23,7 +23,7 @@ This project used [Ipanov7/forex-bot](https://github.com/Ipanov7/forex-bot) by L
 
 1. Phase 1: Automatically fetching rates, calculating simple % rate changes and sending emails only.
     -  No LLM is involved. Every number is computed in Go, and every word of the email lives in
-[templates/email.tmpl](templates/email.tmpl).
+[email/email.tmpl](email/email.tmpl).
     - Hardcoded, reliable but limited use.
 2. Phase 2: Automatically fetching news sources and explaining the changes WITH recommended action points / possible trends or predictions.
     - LLM is involved for synthesis and reasoning. Possible agentic loop involved for dynamic news fetch.
@@ -54,11 +54,11 @@ emails.
                                │
        ┌───────────────────────┼─────────────────────────────┐
        │ 1. validateEntries    │ reject unknown pairs / rates ≤ 0
-       │ 2. loadHistory        │ previous snapshots          history.go
-       │ 3. fetchRates         │ one GET /latest/USD         rates.go  
-       │ 4. derivePairs        │ five pairs + previous       rates.go 
-       │ 5. saveHistory        │ append today's snapshot     history.go
-       │ 6. buildView, render  │ numbers → text              templates.go 
+       │ 2. LoadHistory        │ previous snapshots + seed   rates/history.go
+       │ 3. FetchLatest        │ one GET /latest/USD         rates/fetch.go
+       │ 4. DerivePairs        │ five pairs + previous       rates/pairs.go
+       │ 5. SaveHistory        │ append today's snapshot     rates/history.go
+       │ 6. Build, Render      │ numbers → text              email/view.go
        │ 7. mailer.Send        │ HTML mail                   mailer/   
        └───────────────────────┴─────────────────────────────┘
 ```
@@ -67,19 +67,21 @@ The binary runs once and exits, the same on GitHub Actions and locally. The opti
 
 ### Files
 
-| File | Responsibility |
+| Folder | Responsibility |
 |---|---|
-| [main.go](main.go) | Entry point. Runs the steps in order and decides what counts as fatal. |
-| [rates.go](rates.go) | Fetches and parses rates, derives the pairs, splits the AUD/VND and CZK/VND moves, formats numbers. |
-| [history.go](history.go) | Reads and writes `history.json`. Finds the previous publication. |
-| [templates.go](templates.go) | Turns the numbers into display strings and renders the embedded template. |
-| [templates/email.tmpl](templates/email.tmpl) | Every word of the email: the `subject`, `body`, `heading`, `line`, `rate`, `legs` and `entry` blocks. |
+| [main.go](main.go) | Entry point. Runs the daily steps in order and decides what counts as fatal. |
+| [rates/](rates/) | The numbers. Fetches and parses rates, derives the pairs, splits the AUD/VND and CZK/VND moves, keeps the history, computes WTD/MTD/YTD and the technical ranges, formats numbers. |
+| [tools/](tools/) | Outside evidence: news feeds, the economic calendar and the SBV central rate. Every source is optional. |
+| [explain/](explain/) | The LLM layer: gathers the evidence, builds the model's input, calls the model, drops made-up citations. |
+| [email/](email/) | Turns the numbers and the explanation into the email. [email.tmpl](email/email.tmpl) holds every word of it. |
 | [mailer/](mailer/mailer.go) | Sends the HTML mail through the Gmail API using an OAuth refresh token. Cleans up `MAIL_TO`. |
 | [logger/](logger/logger.go) | Timestamped stdout, which ends up in the Actions log. |
 | [cmd/authorize/](cmd/authorize/main.go) | One-time local helper that creates the Gmail `REFRESH_TOKEN`. |
+| [cmd/backfill/](cmd/backfill/main.go) | One-off: fetched a year of history with the Pro trial. Not part of the daily run. |
+| [data/history-seed.json](data/history-seed.json) | The backfilled year, committed so it survives a lost Actions cache. |
 | [.github/workflows/daily-email.yml](.github/workflows/daily-email.yml) | The GitHub Actions job. |
 
-Everything is in one flat `package main` apart from `mailer` and `logger`. There's one entry point and data flows in one direction, so there are no boundaries worth enforcing with more packages.
+Imports run one way: `rates` and `tools` know nothing of the rest, `explain` uses both, `email` uses all three, and `main.go` wires them together.
 
 ### Rates: one call, five pairs
 
@@ -88,13 +90,13 @@ The provider quotes every currency per 1 USD. Here, I used **mid-market** rate f
 | Pair | Derived as | Decimals shown |
 |---|---|---|
 | **AUD/VND** (headline) | VND ÷ AUD | 2 |
-| AUD/USD | 1 ÷ AUD | 2 |
+| AUD/USD | 1 ÷ AUD | 4 |
 | USD/VND | VND (read directly) | 0 |
-| CZK/USD | 1 ÷ CZK | 2 |
+| CZK/USD | 1 ÷ CZK | 4 |
 | CZK/VND | VND ÷ CZK | 2 |
 
 - **Why one call:** all five pairs come from the same publication, with one timestamp. Separate calls could each land on a different rate update. The AUD/VND split would then describe a move that never happened at any single moment.
-- **Direction convention:** every rate means "units of QUOTE per 1 BASE" and is named `BASE/QUOTE`. Reciprocals are taken only in `pairDefs` in [rates.go](rates.go). Mixing directions is the classic currency bug, and both versions look like plausible numbers.
+- **Direction convention:** every rate means "units of QUOTE per 1 BASE" and is named `BASE/QUOTE`. Reciprocals are taken only in `pairDefs` in [rates/pairs.go](rates/pairs.go). Mixing directions is the classic currency bug, and both versions look like plausible numbers.
 - **Strict parsing:** `parseRates` keeps only AUD, VND and CZK. It fails if any of them is missing or not positive, or if the response has no publication time. If the provider changes its format, the bot stops instead of dividing by zero.
 - **Key hygiene:** the API key is part of the URL path. The URL is never logged, and `redact` removes the key from network errors.
 
@@ -114,7 +116,7 @@ CZK/VND = CZK/USD × USD/VND
           CZK leg   VND leg
 ```
 
-If AUD/VND moved, either the Australian dollar moved against the US dollar, or the dong did, or both. CZK/VND works the same way with the Czech koruna. `attribute` in [rates.go](rates.go) splits each move between its two legs, and each leg is a pair the email also shows:
+If AUD/VND moved, either the Australian dollar moved against the US dollar, or the dong did, or both. CZK/VND works the same way with the Czech koruna. `Attribute` in [rates/pairs.go](rates/pairs.go) splits each move between its two legs, and each leg is a pair the email also shows:
 
 - **Log contributions.** Percentages of a product don't add up exactly, because of a small cross term. Logs do. Each leg's share of the log move is scaled to the plain percentage, so the two legs sum to the headline figure with nothing left over.
 - **Flat guard.** If the total move would print as 0.00%, the split would divide by almost zero. The email says "flat" instead.
@@ -141,7 +143,7 @@ Each run appends one snapshot (publication time plus the three per-USD rates) to
 
 ### Templates
 
-[templates/email.tmpl](templates/email.tmpl) is compiled into the binary with `//go:embed`
+[email/email.tmpl](email/email.tmpl) is compiled into the binary with `//go:embed`
 and parsed at start-up with `html/template`. If the template is broken, the program fails
 before anything is sent, not halfway through. Go passes it formatted strings and
 directions (`+1`, `0`, `-1`). The template decides the wording and the design. Changing
@@ -191,7 +193,7 @@ Secrets never go in the event. Event bodies show up in schedule configs and logs
 
 ### Testing
 
-[main_test.go](main_test.go) covers the pure functions without any network calls: rate
+Each package has its own tests, and they cover the pure functions without any network calls: rate
 parsing, the direction convention, attribution (same direction, opposite legs, one leg
 still, near-zero), rounded legs adding up, history dedupe and cap, entry validation,
 number formatting, key redaction, and a golden test that fixes the subject and the email's
@@ -304,6 +306,11 @@ Optionally, under the **Variables** tab, add `EVENT` with the event JSON, e.g. `
    - **Notifications:** turn on "notify on failure"
 
    Use **Test run**. It should answer `204` and a run appears under Actions.
+
+   For a second job that only records the rates at a fixed time, without emailing,
+   copy the job and change the body to `{"ref":"master","inputs":{"mode":"record"}}`.
+   The email job can say `"mode":"send"` or leave `inputs` out. Both jobs share the
+   history; the workflow runs one at a time, so they never write it at once.
 
 The token expires, at most a year after you create it. When it does, the cron-job.org
 job fails with `401`: create a new token and paste it into the header.

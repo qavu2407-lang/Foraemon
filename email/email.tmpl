@@ -1,0 +1,90 @@
+{{/* The subject is a mail header, not HTML: render() unescapes it. */}}
+{{define "subject" -}}
+{{range $i, $s := .Sections}}{{if $i}} · {{end}}{{with index $s.Pairs 0}}{{.Name}} {{.Rate}}{{with .Change}} ({{.}}){{end}}{{end}}{{end}}
+{{- end}}
+
+{{/* Mail clients ignore <style> blocks unevenly, so styles are inline. */}}
+{{define "body" -}}
+<!DOCTYPE html>
+<html lang="en">
+<body style="margin:0; padding:16px; font-family:Arial, Helvetica, sans-serif; font-size:14px; line-height:1.5; color:#222222;">
+<p>Good morning. Here is your FX update for {{.Date}}.</p>
+
+<h2 style="margin:24px 0 8px; font-size:18px; font-weight:bold;">1. Market snapshot</h2>
+{{if .Headlines}}<p style="margin:8px 0 4px; font-weight:bold;">In today's update:</p>
+<ul style="margin:0 0 8px; padding-left:20px;">{{range .Headlines}}<li>{{template "claim" .}}</li>{{end}}</ul>
+{{end}}<table role="presentation" style="border-collapse:collapse;">
+{{range .Sections}}{{with index .Pairs 0}}<tr><td style="padding:2px 16px 2px 0; font-weight:bold;">{{.Name}}</td><td style="padding:2px 16px 2px 0; text-align:right; font-weight:bold;">{{.Rate}}</td><td style="padding:2px 0; text-align:right;">{{.Change}}</td></tr>
+{{template "entry" .}}{{end}}{{end}}</table>
+<p style="font-size:12px; color:#666666;">{{if .Since}}Rates published {{.AsOf}}, change since {{.Since}}.{{else}}Rates published {{.AsOf}}. First run: history starts today, so there is no change yet.{{end}} Why they moved is in section 3.</p>
+
+<h2 style="margin:24px 0 8px; font-size:18px; font-weight:bold;">2. FX market rates</h2>
+<table role="presentation" style="border-collapse:collapse;">
+<tr><th style="padding:2px 12px 2px 0; text-align:left; border-bottom:1px solid #cccccc;"></th><th style="padding:2px 12px 2px 0; text-align:right; border-bottom:1px solid #cccccc;">Today</th><th style="padding:2px 12px 2px 0; text-align:right; border-bottom:1px solid #cccccc;">Last</th><th style="padding:2px 12px 2px 0; text-align:right; border-bottom:1px solid #cccccc;">WTD</th><th style="padding:2px 12px 2px 0; text-align:right; border-bottom:1px solid #cccccc;">MTD</th><th style="padding:2px 12px 2px 0; text-align:right; border-bottom:1px solid #cccccc;">YTD</th></tr>
+{{range .Rates}}<tr><td style="padding:2px 12px 2px 0;">{{.Name}}</td><td style="padding:2px 12px 2px 0; text-align:right;">{{.Today}}</td><td style="padding:2px 12px 2px 0; text-align:right;">{{.Last}}</td><td style="padding:2px 12px 2px 0; text-align:right;">{{.WTD}}</td><td style="padding:2px 12px 2px 0; text-align:right;">{{.MTD}}</td><td style="padding:2px 0; text-align:right;">{{.YTD}}</td></tr>
+{{end}}</table>
+<ul style="margin:8px 0; padding-left:20px; font-size:12px; color:#666666;">
+<li>All rates are mid-market from ExchangeRate-API. What you get on a transfer is lower by the provider's fee.</li>
+<li><b>Today</b> is the latest publication ({{.AsOf}}). <b>Last</b> is the one before it.</li>
+<li><b>WTD, MTD and YTD</b> compare today's rate with the last publication before Monday, the 1st of the month, and 1 January, each at 00:00 UTC, the provider's day.</li>
+<li>History before 1 Oct 2026 is backfilled from ExchangeRate-API's historical data, one blended mid-rate per day.</li>
+<li><b>—</b> means the history doesn't go back far enough.</li>
+</ul>
+
+<h2 style="margin:24px 0 8px; font-size:18px; font-weight:bold;">3. Why it moved</h2>
+{{if .Since}}<p style="margin:8px 0 4px; font-weight:bold;">Which leg moved</p>
+{{range .Sections}}<table role="presentation" style="border-collapse:collapse; margin-bottom:8px;">
+{{range .Pairs}}{{template "line" .}}{{end}}</table>
+{{end}}{{end}}{{if .Macro}}<p style="margin:12px 0 4px; font-weight:bold;">Drivers</p>
+{{range .Macro}}<p style="margin:4px 0 10px;"><b>{{.Currency}}:</b> {{template "claim" .}}</p>
+{{end}}{{end}}{{with .NoExplain}}<p style="color:#666666;">No explanation today: {{.}}</p>
+{{end}}{{with .SBV}}<p>The SBV central rate is {{.Central}} ({{.Date}}{{if .Stale}}, not updated today{{end}}). Market USD/VND at {{.Market}} is {{.Gap}} {{if .Above}}above{{else}}below{{end}} it{{if .Above}}, so the dong is trading weaker than the central rate{{else}}, so the dong is trading stronger than the central rate{{end}}.</p>
+{{end}}
+<h3 style="margin:16px 0 4px; font-size:15px; font-weight:bold;">Technical context</h3>
+<table role="presentation" style="border-collapse:collapse;">
+<tr><th style="padding:2px 12px 2px 0; text-align:left; border-bottom:1px solid #cccccc;"></th><th style="padding:2px 12px 2px 0; text-align:left; border-bottom:1px solid #cccccc;">30-day range</th><th style="padding:2px 12px 2px 0; text-align:left; border-bottom:1px solid #cccccc;">52-week range</th><th style="padding:2px 12px 2px 0; text-align:left; border-bottom:1px solid #cccccc;">Streak</th></tr>
+{{range .Technicals}}<tr><td style="padding:2px 12px 2px 0;">{{.Name}}</td><td style="padding:2px 12px 2px 0;">{{.Range30}} (at {{.Pos30}})</td><td style="padding:2px 12px 2px 0;">{{if .Range52}}{{.Range52}} (at {{.Pos52}}){{else}}—{{end}}</td><td style="padding:2px 0;">{{if gt .StreakDir 0}}up {{.Streak}} in a row{{else if lt .StreakDir 0}}down {{.Streak}} in a row{{else}}flat{{end}}</td></tr>
+{{end}}</table>
+<ul style="margin:8px 0; padding-left:20px; font-size:12px; color:#666666;">
+<li>The drivers are written by a language model from the cited news. "Likely" or "consistent with" marks its own inference, not a reported fact.</li>
+<li>Some sources, such as FXStreet and Investing.com, may need a VPN to open from Vietnam. The source list at the end gives each one's headline, so a claim can be checked without opening the link.</li>
+<li>"At 0%" is the bottom of the range and "at 100%" the top. A streak counts publications moving the same way.</li>
+</ul>
+
+<h2 style="margin:24px 0 8px; font-size:18px; font-weight:bold;">4. What's next</h2>
+<h3 style="margin:16px 0 4px; font-size:15px; font-weight:bold;">Calendar, next 48 hours (ICT)</h3>
+{{if .Calendar}}<table role="presentation" style="border-collapse:collapse;">
+<tr><th style="padding:2px 12px 2px 0; text-align:left; border-bottom:1px solid #cccccc;">When</th><th style="padding:2px 12px 2px 0; text-align:left; border-bottom:1px solid #cccccc;"></th><th style="padding:2px 12px 2px 0; text-align:left; border-bottom:1px solid #cccccc;">Event</th><th style="padding:2px 12px 2px 0; text-align:left; border-bottom:1px solid #cccccc;">Impact</th><th style="padding:2px 12px 2px 0; text-align:left; border-bottom:1px solid #cccccc;">Forecast</th><th style="padding:2px 12px 2px 0; text-align:left; border-bottom:1px solid #cccccc;">Previous</th></tr>
+{{range .Calendar}}<tr><td style="padding:2px 12px 2px 0;">{{.When}}</td><td style="padding:2px 12px 2px 0;">{{.Currency}}</td><td style="padding:2px 12px 2px 0;">{{.Title}}</td><td style="padding:2px 12px 2px 0;">{{.Impact}}</td><td style="padding:2px 12px 2px 0;">{{.Forecast}}</td><td style="padding:2px 0;">{{.Previous}}</td></tr>
+{{end}}</table>
+<p style="font-size:12px; color:#666666;">AUD, USD and EUR only: the calendar has no CZK or VND, and EUR stands in for the koruna.</p>
+{{else}}<p style="color:#666666;">No high or medium impact AUD, USD or EUR events in the next 48 hours.</p>
+{{end}}{{if .Scenarios}}<h3 style="margin:16px 0 4px; font-size:15px; font-weight:bold;">Scenarios</h3>
+<ul style="margin:0 0 8px; padding-left:20px;">{{range .Scenarios}}<li><b>If</b> {{.If}}, <b>then</b> {{.Then}}</li>{{end}}</ul>
+{{end}}
+<p style="margin-top:24px; font-size:12px; color:#666666;">For information only, not financial advice. The headlines, drivers and scenarios are written by a language model from the linked news; numbers in brackets link to the headline each claim rests on. Every rate and percentage is computed, not written by the model.<br>
+Sources: rates from ExchangeRate-API · calendar from ForexFactory · SBV central rate via <a href="{{.SBVLink}}">AllRatesToday</a>.</p>
+{{if .Citations}}<p style="margin:16px 0 4px; font-size:12px; font-weight:bold; color:#666666;">Sources cited</p>
+<ol style="margin:0; padding-left:20px; font-size:12px; color:#666666;">{{range .Citations}}<li value="{{.N}}">{{.Publisher}}, {{.Date}}: <a href="{{.URL}}" style="color:#666666;">{{.Title}}</a></li>{{end}}</ol>
+{{end}}</body>
+</html>
+{{end}}
+
+{{define "claim"}}{{.Text}}{{range .Cites}} <a href="{{.URL}}">[{{.N}}]</a>{{else}} <span style="color:#999999;">(no source)</span>{{end}}{{end}}
+
+{{define "line" -}}
+<tr><td style="padding:2px 16px 2px 0;">{{.Name}}</td><td style="padding:2px 16px 2px 0; text-align:right;">{{.Rate}}</td><td style="padding:2px 0; text-align:right;">{{.Change}}</td></tr>
+{{template "legs" .Legs}}
+{{- end}}
+
+{{define "legs"}}{{with .}}
+{{- if .Flat -}}
+<tr><td colspan="3" style="padding:0 0 2px 16px; color:#666666;">flat, no move to attribute</td></tr>
+{{else -}}
+<tr><td style="padding:0 16px 0 16px; color:#666666;">{{.Base}} leg</td><td style="padding:0 16px 0 0; text-align:right; color:#666666;">{{.Leg}}pp</td><td style="padding:0; color:#666666;">{{if gt .LegDir 0}}{{.Base}} stronger vs USD{{else if lt .LegDir 0}}{{.Base}} weaker vs USD{{else}}{{.Base}} unchanged vs USD{{end}}</td></tr>
+<tr><td style="padding:0 16px 2px 16px; color:#666666;">VND leg</td><td style="padding:0 16px 2px 0; text-align:right; color:#666666;">{{.VND}}pp</td><td style="padding:0 0 2px; color:#666666;">{{if gt .VNDDir 0}}VND weaker vs USD{{else if lt .VNDDir 0}}VND stronger vs USD{{else}}VND unchanged vs USD{{end}}</td></tr>
+{{end}}{{end}}{{end}}
+
+{{define "entry"}}{{with .Entry -}}
+<tr><td></td><td colspan="2" style="padding:0 0 2px; color:#666666;">{{.}}</td></tr>
+{{end}}{{end}}
