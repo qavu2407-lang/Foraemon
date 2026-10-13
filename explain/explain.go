@@ -29,6 +29,12 @@ type Claim struct {
 	Cites    []int  `json:"cites"`
 }
 
+// Usage is what one model call consumed, kept for the run record's cost.
+type Usage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
 type Scenario struct {
 	If   string `json:"if"`
 	Then string `json:"then"`
@@ -85,48 +91,63 @@ var explanationSchema = map[string]any{
 	},
 }
 
-// explain asks the model chosen in OPENAI_API_KEY / model for the explanation. input is
+// ask asks the model chosen in OPENAI_API_KEY / model for the explanation. input is
 // marshalled as the user message; nHeadlines bounds the valid citation ids.
-func ask(ctx context.Context, input any, nHeadlines int) (Explanation, error) {
-	apikey, model := os.Getenv("OPENAI_API_KEY"), os.Getenv("model")
-	if apikey == "" || model == "" {
-		return Explanation{}, fmt.Errorf("OPENAI_API_KEY or model is not set")
-	}
+func ask(ctx context.Context, input any, nHeadlines int) (Explanation, Usage, error) {
 	data, err := json.Marshal(input)
 	if err != nil {
-		return Explanation{}, err
+		return Explanation{}, Usage{}, err
+	}
+	content, u, err := Chat(ctx, os.Getenv("model"), systemPrompt, string(data), "explanation", explanationSchema)
+	if err != nil {
+		return Explanation{}, u, err
+	}
+	var e Explanation
+	if err := json.Unmarshal([]byte(content), &e); err != nil {
+		return Explanation{}, u, fmt.Errorf("model output is not the expected JSON: %w", err)
+	}
+	return e.checked(nHeadlines), u, nil
+}
+
+// Chat sends one system + user message to model through OpenAI chat completions and
+// returns the reply, which must match schema. Usage is set whenever the model answered,
+// even with an error, since those tokens were paid for.
+func Chat(ctx context.Context, model, system, user, name string, schema map[string]any) (string, Usage, error) {
+	apikey := os.Getenv("OPENAI_API_KEY")
+	if apikey == "" || model == "" {
+		return "", Usage{}, fmt.Errorf("OPENAI_API_KEY or the model is not set")
 	}
 	reqBody, err := json.Marshal(map[string]any{
 		"model": model,
 		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": string(data)},
+			{"role": "system", "content": system},
+			{"role": "user", "content": user},
 		},
 		"response_format": map[string]any{
 			"type":        "json_schema",
-			"json_schema": map[string]any{"name": "explanation", "strict": true, "schema": explanationSchema},
+			"json_schema": map[string]any{"name": name, "strict": true, "schema": schema},
 		},
 	})
 	if err != nil {
-		return Explanation{}, err
+		return "", Usage{}, err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(reqBody))
 	if err != nil {
-		return Explanation{}, err
+		return "", Usage{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apikey)
 	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return Explanation{}, err
+		return "", Usage{}, err
 	}
 	defer res.Body.Close()
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
-		return Explanation{}, err
+		return "", Usage{}, err
 	}
 
 	var resp struct {
@@ -146,28 +167,25 @@ func ask(ctx context.Context, input any, nHeadlines int) (Explanation, error) {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return Explanation{}, fmt.Errorf("model returned %s: %w", res.Status, err)
+		return "", Usage{}, fmt.Errorf("model returned %s: %w", res.Status, err)
 	}
+	u := Usage{resp.Usage.PromptTokens, resp.Usage.CompletionTokens}
 	if resp.Error != nil {
-		return Explanation{}, fmt.Errorf("model returned %s: %s", res.Status, resp.Error.Message)
+		return "", u, fmt.Errorf("model returned %s: %s", res.Status, resp.Error.Message)
 	}
 	if len(resp.Choices) == 0 {
-		return Explanation{}, fmt.Errorf("model returned %s with no choices", res.Status)
+		return "", u, fmt.Errorf("model returned %s with no choices", res.Status)
 	}
-	logger.Log(fmt.Sprintf("model %s used %d input and %d output tokens", model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens))
+	logger.Log(fmt.Sprintf("model %s used %d input and %d output tokens", model, u.InputTokens, u.OutputTokens))
 
 	c := resp.Choices[0]
 	if c.Message.Refusal != "" {
-		return Explanation{}, fmt.Errorf("model refused: %s", c.Message.Refusal)
+		return "", u, fmt.Errorf("model refused: %s", c.Message.Refusal)
 	}
 	if c.FinishReason != "stop" {
-		return Explanation{}, fmt.Errorf("model stopped early: %s", c.FinishReason)
+		return "", u, fmt.Errorf("model stopped early: %s", c.FinishReason)
 	}
-	var e Explanation
-	if err := json.Unmarshal([]byte(c.Message.Content), &e); err != nil {
-		return Explanation{}, fmt.Errorf("model output is not the expected JSON: %w", err)
-	}
-	return e.checked(nHeadlines), nil
+	return c.Message.Content, u, nil
 }
 
 // checked drops every claim that cites a headline id we never sent: a made-up source is

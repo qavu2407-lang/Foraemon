@@ -16,6 +16,10 @@ on:
 
 concurrency: daily-email
 
+# contents: write lets the last step push the run record to the eval-data branch.
+permissions:
+  contents: write
+
 jobs:
   send:
     runs-on: ubuntu-latest
@@ -47,3 +51,26 @@ jobs:
           model: ${{ vars.MODEL }}
           EVENT: ${{ vars.EVENT }}
           MODE: ${{ inputs.mode }}
+
+      # The runner is deleted after the job, so the day's run record goes to the eval-data
+      # branch: an orphan branch (no shared history with master) holding only the records.
+      # always(): a failed send still keeps the record. Record mode writes none: nothing to do.
+      - if: always()
+        run: |
+          [ -n "$(ls tests/results/*.json 2>/dev/null)" ] || exit 0
+          mv tests/results "$RUNNER_TEMP/results"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Exit code 2 means the branch doesn't exist yet; any other failure stops the step
+          # rather than starting a second, unpushable history.
+          if git ls-remote --exit-code --heads origin eval-data >/dev/null; then
+            git fetch --depth=1 origin eval-data && git checkout -B eval-data FETCH_HEAD
+          elif [ $? -eq 2 ]; then
+            git checkout --orphan eval-data && git rm -rfq .
+          else
+            exit 1
+          fi
+          mkdir -p tests/results && cp "$RUNNER_TEMP"/results/*.json tests/results/
+          git add -f tests/results
+          git diff --cached --quiet || git commit -m "Run record $(TZ=Asia/Ho_Chi_Minh date +%F)"
+          git push origin eval-data

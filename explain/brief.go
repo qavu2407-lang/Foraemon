@@ -19,24 +19,27 @@ type Brief struct {
 	Explanation *Explanation
 	NoExplain   string         // why there is no explanation, "" when there is one
 	Input       map[string]any // what the model was sent, kept for previews
+	Usage       Usage
+	Took        time.Duration // the model call alone, not the fetching before it
+	Errors      []string      // the sources that failed, for the run record
 }
 
 func Gather(ctx context.Context, cur rates.Snapshot, rows []rates.PeriodRow, now time.Time) Brief {
 	var b Brief
 	news, errs := tools.FetchNews(ctx, now.Add(-48*time.Hour), 8)
 	for _, err := range errs {
-		logger.Error(fmt.Errorf("news: %w", err))
+		b.fail(fmt.Errorf("news: %w", err))
 	}
 	b.News = news
 
 	// EUR stands in for the koruna, which mostly follows the ECB; the feed has no CZK.
 	if cal, err := tools.FetchCalendar(ctx, now, now.Add(48*time.Hour), []string{"AUD", "USD", "EUR"}); err != nil {
-		logger.Error(fmt.Errorf("calendar: %w", err))
+		b.fail(fmt.Errorf("calendar: %w", err))
 	} else {
 		b.Calendar = cal
 	}
 	if sbv, err := tools.FetchCentralRate(ctx); err != nil {
-		logger.Error(fmt.Errorf("SBV central rate: %w", err))
+		b.fail(fmt.Errorf("SBV central rate: %w", err))
 	} else {
 		b.SBV = &sbv
 	}
@@ -47,14 +50,22 @@ func Gather(ctx context.Context, cur rates.Snapshot, rows []rates.PeriodRow, now
 	}
 	logger.Log(fmt.Sprintf("Explaining with %d headlines...", len(news)))
 	b.Input = input(cur, rows, b)
-	e, err := ask(ctx, b.Input, len(news))
+	start := time.Now()
+	e, u, err := ask(ctx, b.Input, len(news))
+	b.Usage, b.Took = u, time.Since(start)
 	if err != nil {
-		logger.Error(fmt.Errorf("explain: %w", err))
+		b.fail(fmt.Errorf("explain: %w", err))
 		b.NoExplain = err.Error()
 		return b
 	}
 	b.Explanation = &e
 	return b
+}
+
+// fail logs err and keeps it for the run record.
+func (b *Brief) fail(err error) {
+	logger.Error(err)
+	b.Errors = append(b.Errors, err.Error())
 }
 
 // input is what the model sees: the numbers as the email prints them, so it can't

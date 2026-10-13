@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -70,7 +71,11 @@ func CheckRate(ctx context.Context, request RateRequest) error {
 	prev := rates.Previous(history, snap) // strictly older, so not today's own snapshot
 	pairs := rates.DerivePairs(snap, prev)
 	rows := rates.PeriodRows(history, snap, pairs)
-	b := explain.Gather(ctx, snap, rows, time.Now())
+	start := time.Now()
+	b := explain.Gather(ctx, snap, rows, start)
+	if err := saveRecord(start, b); err != nil {
+		logger.Error(fmt.Errorf("run record not saved: %w", err)) // the email still goes out
+	}
 
 	subject, body, err := email.Render(email.Build(snap, prev, pairs, request.Entry, rows, b))
 	if err != nil {
@@ -88,6 +93,35 @@ func CheckRate(ctx context.Context, request RateRequest) error {
 	}
 	logger.Log("Sending email...")
 	return mailer.Send(ctx, subject, body)
+}
+
+// recordDir holds one JSON file per day: what the model saw and wrote, for replaying and
+// scoring later. The workflow pushes it to the eval-data branch.
+const recordDir = "tests/results"
+
+// saveRecord writes today's run record, replacing an earlier run's from the same day.
+func saveRecord(start time.Time, b explain.Brief) error {
+	day := start.In(rates.ICT).Format("2006-01-02")
+	data, err := json.MarshalIndent(map[string]any{
+		"date":            day,
+		"started":         start.UTC().Format(time.RFC3339),
+		"commit":          os.Getenv("GITHUB_SHA"), // "" for local runs
+		"model":           os.Getenv("model"),
+		"explain_seconds": b.Took.Seconds(), // the model call only
+		"usage":           b.Usage,
+		"errors":          b.Errors,
+		"no_explain":      b.NoExplain,
+		"input":           b.Input,       // what the model saw: rates, legs, SBV, calendar, headlines
+		"output":          b.Explanation, // after checked() dropped made-up citations
+		"news":            b.News,        // the same headlines with their URLs
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(recordDir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(recordDir, day+".json"), data, 0o644)
 }
 
 // record fetches the latest rates and appends them to the history. It returns the history

@@ -8,4 +8,6 @@
 history.json
 
 # Design notes, kept local
-PLAN.md
+# PLAN.md
+# Daily run records, pushed to the eval-data branch by the workflow
+tests/results/
