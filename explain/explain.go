@@ -91,6 +91,16 @@ var explanationSchema = map[string]any{
 	},
 }
 
+// Replay asks the model again with a saved run record's input, so a changed prompt, schema or
+// model can be compared with the original on exactly the same evidence.
+func Replay(ctx context.Context, input json.RawMessage) (Explanation, Usage, error) {
+	var in struct{ Headlines []json.RawMessage }
+	if err := json.Unmarshal(input, &in); err != nil {
+		return Explanation{}, Usage{}, err
+	}
+	return ask(ctx, input, len(in.Headlines))
+}
+
 // ask asks the model chosen in OPENAI_API_KEY / model for the explanation. input is
 // marshalled as the user message; nHeadlines bounds the valid citation ids.
 func ask(ctx context.Context, input any, nHeadlines int) (Explanation, Usage, error) {

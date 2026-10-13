@@ -79,6 +79,7 @@ The binary runs once and exits, the same on GitHub Actions and locally. The opti
 | [logger/](logger/logger.go) | Timestamped stdout, which ends up in the Actions log. |
 | [cmd/authorize/](cmd/authorize/main.go) | One-time local helper that creates the Gmail `REFRESH_TOKEN`. |
 | [cmd/backfill/](cmd/backfill/main.go) | One-off: fetched a year of history with the Pro trial. Not part of the daily run. |
+| [eval/](eval/README.md) | Offline eval: replays saved run records through a variant, scores them (factual precision, importance-weighted recall, F1) and compares against the baseline. Experiment log in `eval/experiments/`. Not part of the daily run. |
 | [data/history-seed.json](data/history-seed.json) | The backfilled year, committed so it survives a lost Actions cache. |
 | [.github/workflows/daily-email.yml](.github/workflows/daily-email.yml) | The GitHub Actions job. |
 
