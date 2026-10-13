@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"sort"
 	"time"
+
+	"lorisocchipinti.com/gbp-rates/clean"
 )
 
 // Event is one scheduled release from the ForexFactory calendar.
@@ -51,7 +53,7 @@ func parseCalendar(data []byte, from, to time.Time, currencies []string) ([]Even
 			t.Before(from) || !t.Before(to) {
 			continue
 		}
-		events = append(events, Event{Time: t, Country: r.Country, Title: r.Title,
+		events = append(events, Event{Time: t, Country: r.Country, Title: clean.Text(r.Title, 200, nil),
 			Impact: r.Impact, Forecast: r.Forecast, Previous: r.Previous})
 	}
 	sort.SliceStable(events, func(i, j int) bool { return events[i].Time.Before(events[j].Time) })

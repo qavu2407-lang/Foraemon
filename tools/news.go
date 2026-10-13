@@ -6,12 +6,12 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"html"
 	"io"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
+
+	"lorisocchipinti.com/gbp-rates/clean"
 )
 
 // Headline is one news item. Its text is untrusted: it reaches the model as data only.
@@ -23,6 +23,9 @@ type Headline struct {
 	Summary   string
 	URL       string
 	Published time.Time
+	// The feed's text before clean.Text, kept so a changed cleaning rule can be re-run
+	// over old run records.
+	RawTitle, RawSummary string
 }
 
 type feed struct{ source, url string }
@@ -43,20 +46,25 @@ var Feeds = []feed{
 }
 
 // FetchNews returns up to perFeed of each feed's items published after since, newest
-// first. A failing feed is reported in errs and skipped.
-func FetchNews(ctx context.Context, since time.Time, perFeed int) (news []Headline, errs []error) {
+// first, and what cleaning found in every item fetched. A failing feed is reported in errs
+// and skipped. The same story from two feeds is kept once.
+func FetchNews(ctx context.Context, since time.Time, perFeed int) (news []Headline, rep clean.Report, errs []error) {
 	seen := map[string]bool{}
 	for _, f := range Feeds {
 		data, err := get(ctx, f.url)
 		if err == nil {
 			var items []Headline
-			items, err = parseFeed(data, f.source)
+			items, err = parseFeed(data, f.source, &rep)
 			n := 0
 			for _, h := range items {
-				if n == perFeed || h.Published.Before(since) || seen[h.Title] {
+				if n == perFeed || h.Published.Before(since) {
 					continue
 				}
-				seen[h.Title] = true
+				if seen[clean.Key(h.Title)] {
+					rep.Duplicates++
+					continue
+				}
+				seen[clean.Key(h.Title)] = true
 				news = append(news, h)
 				n++
 			}
@@ -65,13 +73,13 @@ func FetchNews(ctx context.Context, since time.Time, perFeed int) (news []Headli
 			errs = append(errs, fmt.Errorf("%s: %w", f.source, err))
 		}
 	}
-	return news, errs
+	return news, rep, errs
 }
 
 // parseFeed reads RSS 2.0 and RSS 1.0 (RDF, the RBA's format) alike: both are a list
 // of <item> elements, nested differently. Items without a parseable date are dropped,
 // because their age is unknown. Sorted newest first.
-func parseFeed(data []byte, source string) ([]Headline, error) {
+func parseFeed(data []byte, source string, rep *clean.Report) ([]Headline, error) {
 	var items []Headline
 	undated := 0
 	dec := xml.NewDecoder(bytes.NewReader(data))
@@ -100,20 +108,21 @@ func parseFeed(data []byte, source string) ([]Headline, error) {
 			return nil, err
 		}
 		published, ok := parseDate(it.PubDate + it.Date)
-		title := clean(it.Title, 200)
+		title := clean.Text(it.Title, 200, rep)
 		if !ok || title == "" {
 			undated++
 			continue
 		}
 		// Google News links are redirects that some regions can't open, so the outlet's
 		// name has to travel with the claim. Its titles end in " - Outlet": drop that.
-		publisher := clean(it.Publisher, 80)
+		publisher := clean.Text(it.Publisher, 80, rep)
 		if publisher == "" {
 			publisher = source
 		}
 		title = strings.TrimSuffix(title, " - "+publisher)
-		items = append(items, Headline{Source: source, Publisher: publisher, Author: clean(it.Author, 80),
-			Title: title, Summary: clean(it.Description, 300), URL: strings.TrimSpace(it.Link), Published: published})
+		items = append(items, Headline{Source: source, Publisher: publisher, Author: clean.Text(it.Author, 80, rep),
+			Title: title, Summary: clean.Text(it.Description, 300, rep), URL: strings.TrimSpace(it.Link), Published: published,
+			RawTitle: it.Title, RawSummary: it.Description})
 	}
 	// A feed whose every item is skipped has changed format; say so instead of going quiet.
 	if len(items) == 0 && undated > 0 {
@@ -132,15 +141,4 @@ func parseDate(s string) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
-}
-
-var tags = regexp.MustCompile(`<[^>]*>`)
-
-// clean drops markup, decodes entities, collapses whitespace and truncates to max runes.
-func clean(s string, max int) string {
-	s = strings.Join(strings.Fields(html.UnescapeString(tags.ReplaceAllString(html.UnescapeString(s), " "))), " ")
-	if r := []rune(s); len(r) > max {
-		s = string(r[:max]) + "…"
-	}
-	return s
 }

@@ -72,6 +72,7 @@ The binary runs once and exits, the same on GitHub Actions and locally. The opti
 | [main.go](main.go) | Entry point. Runs the daily steps in order and decides what counts as fatal. |
 | [rates/](rates/) | The numbers. Fetches and parses rates, derives the pairs, splits the AUD/VND and CZK/VND moves, keeps the history, computes WTD/MTD/YTD and the technical ranges, formats numbers. |
 | [tools/](tools/) | Outside evidence: news feeds, the economic calendar and the SBV central rate. Every source is optional. |
+| [clean/](clean/clean.go) | Deterministic cleaning of fetched text before the model: markup, invisible characters, Unicode NFKC, mixed-script flags, whitespace, length; near-duplicate titles. The raw feed text is kept in the run record. |
 | [explain/](explain/) | The LLM layer: gathers the evidence, builds the model's input, calls the model, drops made-up citations. |
 | [email/](email/) | Turns the numbers and the explanation into the email. [email.tmpl](email/email.tmpl) holds every word of it. |
 | [mailer/](mailer/mailer.go) | Sends the HTML mail through the Gmail API using an OAuth refresh token. Cleans up `MAIL_TO`. |

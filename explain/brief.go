@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"lorisocchipinti.com/gbp-rates/clean"
 	"lorisocchipinti.com/gbp-rates/logger"
 	"lorisocchipinti.com/gbp-rates/rates"
 	"lorisocchipinti.com/gbp-rates/tools"
@@ -22,11 +23,13 @@ type Brief struct {
 	Usage       Usage
 	Took        time.Duration // the model call alone, not the fetching before it
 	Errors      []string      // the sources that failed, for the run record
+	Cleaning    clean.Report  // what cleaning found in the fetched news
 }
 
 func Gather(ctx context.Context, cur rates.Snapshot, rows []rates.PeriodRow, now time.Time) Brief {
 	var b Brief
-	news, errs := tools.FetchNews(ctx, now.Add(-48*time.Hour), 8)
+	news, rep, errs := tools.FetchNews(ctx, now.Add(-48*time.Hour), 8)
+	b.Cleaning = rep
 	for _, err := range errs {
 		b.fail(fmt.Errorf("news: %w", err))
 	}

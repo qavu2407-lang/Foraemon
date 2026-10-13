@@ -113,7 +113,8 @@ func saveRecord(start time.Time, b explain.Brief) error {
 		"no_explain":      b.NoExplain,
 		"input":           b.Input,       // what the model saw: rates, legs, SBV, calendar, headlines
 		"output":          b.Explanation, // after checked() dropped made-up citations
-		"news":            b.News,        // the same headlines with their URLs
+		"news":            b.News,        // the same headlines with their URLs and raw feed text
+		"cleaning":        b.Cleaning,    // what cleaning found: invisible characters, mixed scripts, duplicates
 	}, "", "  ")
 	if err != nil {
 		return err
